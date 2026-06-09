@@ -33,7 +33,7 @@ import type { ReplAction } from './components/repl/keymap';
 import styles from './App.module.css';
 
 const CONVERSATION_ID_STORAGE_KEY = 'eo_conversation_id';
-const MODEL_BANNER = 'minimax-m2.7'; // visual only; matches default in agents/_model.py
+const MODEL_BANNER = 'deepseek-v4-flash'; // visual only; matches default in agents/_model.py
 const MAX_INPUT_HISTORY = 50;
 
 function getExistingConversationId(): string | null {

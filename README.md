@@ -24,7 +24,7 @@ The smallest reasonable starting point if you want a Python chat Agent without c
 |----------|----------|-------------|
 | `AI_GATEWAY_API_KEY` | Yes | Model gateway API key. Use your Makers Models API Key, or any OpenAI-compatible provider key. |
 | `AI_GATEWAY_BASE_URL` | Yes | Gateway base URL. For Makers Models, use `https://ai-gateway.edgeone.link/v1`. |
-| `AI_GATEWAY_MODEL` | No | Model ID. Defaults to `@makers/minimax-m2.7` in this template's `.env.example`; set to `@makers/deepseek-v4-flash` for the free built-in model. |
+| `AI_GATEWAY_MODEL` | No | Model ID. Defaults to `@makers/deepseek-v4-flash` (a free built-in model). |
 
 This template follows the OpenAI-compatible standard — point these at Makers Models or any compatible provider.
 
