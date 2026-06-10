@@ -108,8 +108,6 @@ export default function ReplPrompt({
     if (historyIdx !== null) setHistoryIdx(null);
   }
 
-  const showCursor = !loading && value.length === 0;
-
   return (
     <div className={styles.prompt}>
       <div className={styles.inputWrap}>
