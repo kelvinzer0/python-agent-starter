@@ -52,7 +52,7 @@ async def handler(context: Any) -> dict[str, Any]:
             models = [
                 {"id": m.get("id", ""), "owned_by": m.get("owned_by", "")}
                 for m in raw_models
-                if m.get("id")
+                if isinstance(m, dict) and m.get("id")
             ]
             return {"models": models}
 
