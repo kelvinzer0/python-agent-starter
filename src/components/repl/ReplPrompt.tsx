@@ -148,8 +148,7 @@ export default function ReplPrompt({
       {helpOpen && (
         <HelpPanel onClose={() => setHelpOpen(false)} />
       )}
-      <div className={styles.inputWrap}>
-        <span className={styles.statusDot} data-running={loading || undefined} />
+      <div className={styles.inputCard}>
         <textarea
           ref={taRef}
           rows={1}
@@ -164,55 +163,61 @@ export default function ReplPrompt({
           autoCorrect="off"
           autoCapitalize="off"
         />
-        <button
-          type="button"
-          className={styles.sendBtn}
-          onClick={commit}
-          disabled={loading || !value.trim()}
-          title={t('repl.help.send')}
-          aria-label={t('repl.help.send')}
-        >
-          <PaperPlaneRight size={14} weight="fill" className={styles.sendIcon} />
-        </button>
-      </div>
-      <div className={styles.toolbar}>
-        <button
-          type="button"
-          className={styles.toolBtn}
-          onClick={() => handleAction('abort')}
-          title={t('repl.action.abort')}
-        >
-          <Stop size={14} className={styles.toolBtnIcon} />
-          <span className={styles.toolBtnLabel}>{t('repl.action.abort')}</span>
-        </button>
-        <button
-          type="button"
-          className={styles.toolBtn}
-          onClick={() => handleAction('clearScreen')}
-          title={t('repl.action.clear')}
-        >
-          <Trash size={14} className={styles.toolBtnIcon} />
-          <span className={styles.toolBtnLabel}>{t('repl.action.clear')}</span>
-        </button>
-        <button
-          type="button"
-          className={styles.toolBtn}
-          onClick={() => handleAction('toggleVerbose')}
-          title={t('repl.action.trace')}
-        >
-          <TerminalWindow size={14} className={styles.toolBtnIcon} />
-          <span className={styles.toolBtnLabel}>{t('repl.action.trace')}</span>
-        </button>
-        <button
-          type="button"
-          className={styles.toolBtn}
-          onClick={() => handleAction('showHelp')}
-          title={t('repl.action.help')}
-        >
-          <Question size={14} className={styles.toolBtnIcon} />
-          <span className={styles.toolBtnLabel}>{t('repl.action.help')}</span>
-        </button>
+        <div className={styles.actionsRow}>
+          <div className={styles.leftActions}>
+            <span className={styles.statusDot} data-running={loading || undefined} />
+            <div className={styles.toolbar}>
+              <button
+                type="button"
+                className={styles.toolBtn}
+                onClick={() => handleAction('abort')}
+                title={t('repl.action.abort')}
+                aria-label={t('repl.action.abort')}
+              >
+                <Stop size={14} />
+              </button>
+              <button
+                type="button"
+                className={styles.toolBtn}
+                onClick={() => handleAction('clearScreen')}
+                title={t('repl.action.clear')}
+                aria-label={t('repl.action.clear')}
+              >
+                <Trash size={14} />
+              </button>
+              <button
+                type="button"
+                className={styles.toolBtn}
+                onClick={() => handleAction('toggleVerbose')}
+                title={t('repl.action.trace')}
+                aria-label={t('repl.action.trace')}
+              >
+                <TerminalWindow size={14} />
+              </button>
+              <button
+                type="button"
+                className={styles.toolBtn}
+                onClick={() => handleAction('showHelp')}
+                title={t('repl.action.help')}
+                aria-label={t('repl.action.help')}
+              >
+                <Question size={14} />
+              </button>
+            </div>
+          </div>
+          <button
+            type="button"
+            className={styles.sendBtn}
+            onClick={commit}
+            disabled={loading || !value.trim()}
+            title={t('repl.help.send')}
+            aria-label={t('repl.help.send')}
+          >
+            <PaperPlaneRight size={14} weight="fill" className={styles.sendIcon} />
+          </button>
+        </div>
       </div>
     </div>
   );
 }
+

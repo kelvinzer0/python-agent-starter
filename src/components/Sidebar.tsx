@@ -1,5 +1,5 @@
 import { useT } from '../i18n';
-import { Sparkle, Plus, ChatTeardropText, Trash } from '@phosphor-icons/react';
+import { Sparkle, Plus, ChatTeardropText, Trash, Sun, Moon, Monitor } from '@phosphor-icons/react';
 import styles from './Sidebar.module.css';
 
 export interface ChatSessionInfo {
@@ -17,6 +17,8 @@ interface SidebarProps {
   onClearAll: () => void;
   isOpen: boolean;
   onClose: () => void;
+  theme: 'light' | 'dark' | 'system';
+  onThemeChange: (theme: 'light' | 'dark' | 'system') => void;
 }
 
 export default function Sidebar({
@@ -28,6 +30,8 @@ export default function Sidebar({
   onClearAll,
   isOpen,
   onClose,
+  theme,
+  onThemeChange,
 }: SidebarProps) {
   const { t } = useT();
 
@@ -87,16 +91,49 @@ export default function Sidebar({
           )}
         </div>
 
-        {sessions.length > 0 && (
-          <div className={styles.footer}>
+        <div className={styles.footer}>
+          {sessions.length > 0 && (
             <button type="button" className={styles.clearAllBtn} onClick={onClearAll}>
               <Trash size={16} className={styles.trashIcon} />
               {t('repl.session.clearAll')}
             </button>
+          )}
+          <div className={styles.themeSwitchContainer}>
+            <button
+              type="button"
+              className={`${styles.themeBtn} ${theme === 'light' ? styles.themeBtnActive : ''}`}
+              onClick={() => onThemeChange('light')}
+              title={t('repl.theme.light')}
+              aria-label={t('repl.theme.light')}
+            >
+              <Sun size={14} />
+              <span className={styles.themeLabel}>{t('repl.theme.light')}</span>
+            </button>
+            <button
+              type="button"
+              className={`${styles.themeBtn} ${theme === 'dark' ? styles.themeBtnActive : ''}`}
+              onClick={() => onThemeChange('dark')}
+              title={t('repl.theme.dark')}
+              aria-label={t('repl.theme.dark')}
+            >
+              <Moon size={14} />
+              <span className={styles.themeLabel}>{t('repl.theme.dark')}</span>
+            </button>
+            <button
+              type="button"
+              className={`${styles.themeBtn} ${theme === 'system' ? styles.themeBtnActive : ''}`}
+              onClick={() => onThemeChange('system')}
+              title={t('repl.theme.system')}
+              aria-label={t('repl.theme.system')}
+            >
+              <Monitor size={14} />
+              <span className={styles.themeLabel}>{t('repl.theme.system')}</span>
+            </button>
           </div>
-        )}
+        </div>
       </aside>
     </>
   );
 }
+
 

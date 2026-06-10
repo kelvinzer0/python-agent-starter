@@ -85,6 +85,11 @@ const zh = {
 
   // ─── Aria labels ─────────────────────────────────────────────────────
   "aria.closeImagePreview": "关闭图片预览",
+
+  // ─── Theme Selector ──────────────────────────────────────────────────
+  "repl.theme.light": "浅色",
+  "repl.theme.dark": "深色",
+  "repl.theme.system": "系统",
 } as const;
 
 export default zh;

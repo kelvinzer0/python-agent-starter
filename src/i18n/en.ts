@@ -85,6 +85,11 @@ const en = {
 
   // ─── Aria labels ─────────────────────────────────────────────────────
   "aria.closeImagePreview": "Close image preview",
+
+  // ─── Theme Selector ──────────────────────────────────────────────────
+  "repl.theme.light": "Light",
+  "repl.theme.dark": "Dark",
+  "repl.theme.system": "System",
 } as const;
 
 export default en;

@@ -220,6 +220,21 @@ function linesToMessages(lines: ReplLine[]): Message[] {
 function AppInner() {
   const { t } = useT();
 
+  const [theme, setTheme] = useState<'light' | 'dark' | 'system'>(() => {
+    const saved = localStorage.getItem('eo_theme');
+    return (saved as 'light' | 'dark' | 'system') || 'system';
+  });
+
+  useEffect(() => {
+    const root = document.documentElement;
+    if (theme === 'system') {
+      root.removeAttribute('data-theme');
+    } else {
+      root.setAttribute('data-theme', theme);
+    }
+    localStorage.setItem('eo_theme', theme);
+  }, [theme]);
+
   const [conversationId, setConversationId] = useState<string>(() => {
     const existing = getExistingConversationId();
     if (existing) return existing;
@@ -847,6 +862,8 @@ function AppInner() {
         onClearAll={handleClearAll}
         isOpen={sidebarOpen}
         onClose={() => setSidebarOpen(false)}
+        theme={theme}
+        onThemeChange={setTheme}
       />
       <ReplShell
         modelName={selectedModel || 'Agent'}
