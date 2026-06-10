@@ -609,6 +609,7 @@ function AppInner() {
   }, []);
 
   const handleSelectSession = useCallback((id: string) => {
+    localStorage.setItem(CONVERSATION_ID_STORAGE_KEY, id);
     setConversationId(id);
   }, []);
 
