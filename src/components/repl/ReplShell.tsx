@@ -96,7 +96,7 @@ export default function ReplShell({
           <span className={styles.brandIcon}>
             <Sparkle size={12} weight="fill" />
           </span>
-          Agent
+          <span>Agent</span>
         </div>
         <div className={styles.banner}>
           <span className={styles.bannerName}>Chat</span>

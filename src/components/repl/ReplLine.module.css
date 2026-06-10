@@ -72,7 +72,7 @@
   height: 26px;
   border-radius: var(--radius-full);
   background: var(--color-primary);
-  color: #ffffff;
+  color: var(--color-brand-text);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -84,11 +84,16 @@
 .agentAvatar:hover {
   transform: rotate(15deg) scale(1.05);
 }
+.agentAvatar svg {
+  display: block;
+  fill: currentColor;
+}
 
 .agentName {
   font-size: var(--font-size-sm);
   font-weight: 600;
   color: var(--color-text);
+  line-height: 1;
 }
 
 /* ── post-stream Markdown block ──────────────────────────────── */

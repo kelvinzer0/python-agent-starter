@@ -63,6 +63,7 @@
   font-weight: 600;
   font-size: var(--font-size-sm);
   letter-spacing: -0.01em;
+  line-height: 1;
 }
 .brandIcon {
   width: 22px;
