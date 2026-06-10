@@ -25,6 +25,8 @@ from typing import Any, AsyncGenerator
 import asyncio
 import time
 from pathlib import Path
+import inspect
+import json
 
 import httpx
 
@@ -39,7 +41,201 @@ from ._images import extract_images_from_tool_result
 logger = create_logger("chat")
 
 
-def build_system_prompt() -> str:
+# ── Sandbox File Utilities for Workspace Persistence ──
+
+def find_fs_tool_name(tool_registry: ToolRegistry, operation: str) -> str | None:
+    """Dynamically look for the correct files/fs tool name in the registered tools."""
+    for name in tool_registry._handlers.keys():
+        name_lower = name.lower()
+        if "file" in name_lower or "fs" in name_lower:
+            if operation == "write" and "write" in name_lower:
+                return name
+            if operation == "read" and "read" in name_lower:
+                return name
+            if operation == "list" and "list" in name_lower:
+                return name
+            if operation == "remove" and ("remove" in name_lower or "delete" in name_lower or "rm" in name_lower):
+                return name
+    # Fallback to standard platform names
+    fallbacks = {
+        "write": ["files_write", "files.write", "write_file"],
+        "read": ["files_read", "files.read", "read_file"],
+        "list": ["files_list", "files.list", "list_dir"],
+        "remove": ["files_remove", "files.remove", "remove_file", "delete_file"]
+    }
+    for fb in fallbacks.get(operation, []):
+        if fb in tool_registry._handlers:
+            return fb
+    return None
+
+
+def get_tool_param_keys(tool_registry: ToolRegistry, tool_name: str) -> list[str]:
+    """Retrieve parameter keys for the specified tool to map argument keys correctly."""
+    for t in tool_registry.tools:
+        if t["function"]["name"] == tool_name:
+            properties = t["function"]["parameters"].get("properties", {})
+            return list(properties.keys())
+    return []
+
+
+async def sandbox_write_file(tool_registry: ToolRegistry, path: str, content: str) -> bool:
+    """Directly execute the sandbox write tool to write a file in the sandbox."""
+    tool_name = find_fs_tool_name(tool_registry, "write")
+    if not tool_name:
+        return False
+    
+    params = get_tool_param_keys(tool_registry, tool_name)
+    args = {}
+    
+    path_key = "path"
+    if "filepath" in params:
+        path_key = "filepath"
+        
+    content_key = "content"
+    if "data" in params:
+        content_key = "data"
+    elif "text" in params:
+        content_key = "text"
+        
+    args[path_key] = path
+    args[content_key] = content
+    
+    res = await tool_registry.execute_raw(tool_name, json.dumps(args))
+    if isinstance(res, dict) and "error" in res:
+        return False
+    return True
+
+
+async def sandbox_read_file(tool_registry: ToolRegistry, path: str) -> str | None:
+    """Directly execute the sandbox read tool to read a file from the sandbox."""
+    tool_name = find_fs_tool_name(tool_registry, "read")
+    if not tool_name:
+        return None
+        
+    params = get_tool_param_keys(tool_registry, tool_name)
+    path_key = "path"
+    if "filepath" in params:
+        path_key = "filepath"
+        
+    args = {path_key: path}
+    res = await tool_registry.execute_raw(tool_name, json.dumps(args))
+    if isinstance(res, dict) and "error" in res:
+        return None
+    if isinstance(res, str):
+        return res
+    if isinstance(res, dict) and "content" in res:
+        return str(res["content"])
+    return str(res)
+
+
+# ── Workspace Persistence & Synchronization ──
+
+async def load_workspace_files(context: Any) -> dict[str, str]:
+    """Load workspace files from context.store KV storage.
+    Falls back to project templates if store is empty.
+    """
+    cid = context.conversation_id
+    store = context.store
+    store_key = f"workspace_files_{cid}"
+    files_dict = None
+
+    try:
+        if hasattr(store, "get"):
+            res = store.get(store_key)
+            if inspect.isawaitable(res):
+                res = await res
+            if res and isinstance(res, dict):
+                files_dict = res
+    except Exception as e:
+        logger.log(f"[workspace] Failed to get files from store: {e}")
+        
+    if files_dict is not None:
+        logger.log(f"[workspace] Loaded {len(files_dict)} files from store for {cid}")
+        return files_dict
+
+    logger.log(f"[workspace] No files in store for {cid}. Loading default templates.")
+    files_dict = {}
+    
+    project_root = Path(__file__).resolve().parent.parent.parent
+    workspace_dir = project_root / "workspace"
+    if not workspace_dir.exists():
+        workspace_dir = Path.cwd() / "workspace"
+        
+    if workspace_dir.exists() and workspace_dir.is_dir():
+        filenames = [
+            "BOOTSTRAP.md",
+            "IDENTITY.md",
+            "USER.md",
+            "SOUL.md",
+            "AGENTS.md",
+            "TOOLS.md",
+            "HEARTBEAT.md"
+        ]
+        for name in filenames:
+            filepath = workspace_dir / name
+            if filepath.exists() and filepath.is_file():
+                try:
+                    content = filepath.read_text(encoding="utf-8").strip()
+                    files_dict[name] = content
+                except Exception:
+                    pass
+    return files_dict
+
+
+async def sync_workspace_to_sandbox(tool_registry: ToolRegistry, files_dict: dict[str, str]) -> None:
+    """Initialize workspace files inside the stateless sandbox container under /workspace/."""
+    for filename, content in files_dict.items():
+        sandbox_path = f"/workspace/{filename}"
+        success = await sandbox_write_file(tool_registry, sandbox_path, content)
+        if success:
+            logger.log(f"[workspace] Synced {filename} to sandbox path {sandbox_path}")
+        else:
+            logger.log(f"[workspace] Failed to sync {filename} to sandbox")
+
+
+async def sync_workspace_from_sandbox(context: Any, tool_registry: ToolRegistry) -> None:
+    """Read updated workspace files from the sandbox and save them back to context.store KV."""
+    cid = context.conversation_id
+    store = context.store
+    store_key = f"workspace_files_{cid}"
+    
+    filenames = [
+        "BOOTSTRAP.md",
+        "IDENTITY.md",
+        "USER.md",
+        "SOUL.md",
+        "AGENTS.md",
+        "TOOLS.md",
+        "HEARTBEAT.md"
+    ]
+    
+    updated_files = {}
+    for name in filenames:
+        sandbox_path = f"/workspace/{name}"
+        content = await sandbox_read_file(tool_registry, sandbox_path)
+        if content is not None:
+            updated_files[name] = content
+            logger.log(f"[workspace] Read updated {name} from sandbox")
+        else:
+            # File missing = deleted (e.g. BOOTSTRAP.md deleted by agent)
+            logger.log(f"[workspace] {name} is missing in sandbox (deleted or not created)")
+            
+    try:
+        if hasattr(store, "put"):
+            res = store.put(store_key, updated_files)
+            if inspect.isawaitable(res):
+                await res
+            logger.log(f"[workspace] Saved updated workspace back to store for {cid}")
+        elif hasattr(store, "set"):
+            res = store.set(store_key, updated_files)
+            if inspect.isawaitable(res):
+                await res
+            logger.log(f"[workspace] Saved updated workspace back to store for {cid}")
+    except Exception as e:
+        logger.log(f"[workspace] Failed to save updated workspace to store: {e}")
+
+
+def build_system_prompt(files_dict: dict[str, str]) -> str:
     """Builds a dynamic system prompt containing the base instructions and the
     contents of all active workspace markdown files to shape identity and preferences.
     """
@@ -64,52 +260,41 @@ def build_system_prompt() -> str:
         "6. If the task can be answered without tools, answer directly and keep the response concise.\n"
         "Only call tools that appear in the function-calling schema provided to you.\n\n"
         "=== WORKSPACE INSTRUCTIONS ===\n"
-        "You have a dedicated workspace directory `workspace/` containing Markdown files that define your personality, user details, and operational rules.\n"
+        "You have a dedicated workspace directory `/workspace/` containing Markdown files that define your personality, user details, and operational rules.\n"
         "You must read, respect, and update these files as needed to maintain state across sessions.\n"
-        "You can read, write, or delete files in the `workspace/` directory using your file tools (e.g., using paths like `workspace/IDENTITY.md` or `workspace/USER.md`).\n"
+        "You can read, write, or delete files in the `/workspace/` directory using your file tools (e.g., using paths like `/workspace/IDENTITY.md` or `/workspace/USER.md`).\n"
         "If you make changes to these files, they will be loaded into your system prompt in subsequent turns/sessions.\n\n"
     )
 
-    project_root = Path(__file__).resolve().parent.parent.parent
-    workspace_dir = project_root / "workspace"
-    if not workspace_dir.exists():
-        workspace_dir = Path.cwd() / "workspace"
+    files_descriptions = {
+        "BOOTSTRAP.md": "BOOTSTRAP / INITIALIZATION SETUP (If this file exists, you are in bootstrap mode. Follow its instructions immediately and delete this file once setup is complete)",
+        "IDENTITY.md": "IDENTITY / WHO YOU ARE (Your name, creature, vibe, emoji, avatar)",
+        "USER.md": "USER DETAILS / ABOUT THE HUMAN (Name, preferences, timezone, notes)",
+        "SOUL.md": "SOUL / PERSONALITY & CORE PRINCIPLES (Your behavioral guidelines and personality)",
+        "AGENTS.md": "AGENTS / OPERATIONAL RULES (Your standard operating procedures and workspace instructions)",
+        "TOOLS.md": "TOOLS / ENVIRONMENT-SPECIFIC NOTES (Specific credentials, hardware locations, SSH hosts, preferred TTS voice, etc.)",
+        "HEARTBEAT.md": "HEARTBEAT / PERIODIC TASKS (Add tasks here to run periodically; if empty, periodic checks are skipped)",
+    }
+
+    loaded_files = []
+    for filename, content in files_dict.items():
+        if content:
+            desc = files_descriptions.get(filename, "Workspace file")
+            loaded_files.append(f"### {filename} ({desc}):\n```markdown\n{content}\n```")
 
     workspace_content = ""
-    if workspace_dir.exists() and workspace_dir.is_dir():
-        files_to_load = [
-            ("BOOTSTRAP.md", "BOOTSTRAP / INITIALIZATION SETUP (If this file exists, you are in bootstrap mode. Follow its instructions immediately and delete this file once setup is complete)"),
-            ("IDENTITY.md", "IDENTITY / WHO YOU ARE (Your name, creature, vibe, emoji, avatar)"),
-            ("USER.md", "USER DETAILS / ABOUT THE HUMAN (Name, preferences, timezone, notes)"),
-            ("SOUL.md", "SOUL / PERSONALITY & CORE PRINCIPLES (Your behavioral guidelines and personality)"),
-            ("AGENTS.md", "AGENTS / OPERATIONAL RULES (Your standard operating procedures and workspace instructions)"),
-            ("TOOLS.md", "TOOLS / ENVIRONMENT-SPECIFIC NOTES (Specific credentials, hardware locations, SSH hosts, preferred TTS voice, etc.)"),
-            ("HEARTBEAT.md", "HEARTBEAT / PERIODIC TASKS (Add tasks here to run periodically; if empty, periodic checks are skipped)"),
-        ]
+    if loaded_files:
+        workspace_content = "=== CURRENT WORKSPACE FILES ===\n"
+        workspace_content += "\n\n".join(loaded_files)
+        workspace_content += "\n\n===============================\n"
 
-        loaded_files = []
-        for filename, description in files_to_load:
-            filepath = workspace_dir / filename
-            if filepath.exists() and filepath.is_file():
-                try:
-                    content = filepath.read_text(encoding="utf-8").strip()
-                    if content:
-                        loaded_files.append(f"### {filename} ({description}):\n```markdown\n{content}\n```")
-                except Exception:
-                    pass
-
-        if loaded_files:
-            workspace_content = "=== CURRENT WORKSPACE FILES ===\n"
-            workspace_content += "\n\n".join(loaded_files)
-            workspace_content += "\n\n===============================\n"
-
-    bootstrap_exists = (workspace_dir / "BOOTSTRAP.md").exists()
+    bootstrap_exists = "BOOTSTRAP.md" in files_dict
     if bootstrap_exists:
         base_prompt += (
             "IMPORTANT: BOOTSTRAP.md is present in your workspace. You must read it and start the onboarding conversation with the user.\n"
             "Introduce yourself as AI Studio Warung Lakku, explain that you just came online, and ask the user who they are and what name/details you should set.\n"
             "Guide them through setting up IDENTITY.md, USER.md, and SOUL.md.\n"
-            "Once onboarding/bootstrap is fully finished, you MUST use your file tools to DELETE `workspace/BOOTSTRAP.md` so that the setup is complete.\n\n"
+            "Once onboarding/bootstrap is fully finished, you MUST use your file tools to DELETE `/workspace/BOOTSTRAP.md` so that the setup is complete.\n\n"
         )
 
     return base_prompt + workspace_content
@@ -178,9 +363,13 @@ async def handler(context: Any) -> AsyncGenerator[str, None]:
     finally:
         tools_span.end()
 
+    # ── Workspace: Load files and initialize sandbox ──
+    files_dict = await load_workspace_files(context)
+    await sync_workspace_to_sandbox(tool_registry, files_dict)
+
     # Build messages list: system prompt + history + current user message
     messages: list[dict[str, Any]] = (
-        [{"role": "system", "content": build_system_prompt()}]
+        [{"role": "system", "content": build_system_prompt(files_dict)}]
         + history
         + [{"role": "user", "content": message}]
     )
@@ -398,5 +587,9 @@ async def handler(context: Any) -> AsyncGenerator[str, None]:
             await session.save_assistant_message(cid, assistant_content)
         finally:
             save_span.end()
+
+    # ── Workspace: save updated files back to context.store KV ──
+    if 'tool_registry' in locals() and tool_registry:
+        await sync_workspace_from_sandbox(context, tool_registry)
 
     yield sse_event("done", {"stopped": cancelled})
