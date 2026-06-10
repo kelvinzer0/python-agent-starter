@@ -122,11 +122,9 @@ class handler(BaseHTTPRequestHandler):
         conversation_id = str(body.get("conversation_id") or body.get("conversationId") or "").strip()
 
         # Fall back to the makers-conversation-id header if the body field is
-        # missing or empty. The /chat endpoint receives the same header and
-        # the frontend's fetchConversationHistory() sends the ID exclusively
-        # via this header (with an empty JSON body), so the history endpoint
-        # must also honour it to avoid returning an empty message list on
-        # session switch.
+        # missing or empty. The frontend now sends conversation_id in the body
+        # (preferred, more reliable), but the header is kept for backward
+        # compatibility with older clients or proxies that strip the body.
         if not conversation_id:
             conversation_id = str(
                 self.headers.get("makers-conversation-id")

@@ -74,7 +74,7 @@ export async function fetchConversationHistory(conversationId: string): Promise<
         'Content-Type': 'application/json',
         'makers-conversation-id': conversationId,
       },
-      body: JSON.stringify({}),
+      body: JSON.stringify({ conversation_id: conversationId }),
     });
 
     if (!res.ok) return [];
