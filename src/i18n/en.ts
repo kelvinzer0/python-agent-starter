@@ -5,8 +5,8 @@ const en = {
 
   // Empty state
   "empty.title": "Python Starter",
-  "empty.hint": "I'm an Agent running on EdgeOne, using raw httpx streaming for chat and tool calling loops. Supports commands, files, code_interpreter, and browser sandbox tools.",
-  "empty.features": "EdgeOne Store · Session Memory · Platform Tools",
+  "empty.hint": "I'm an AI Assistant. I can execute terminal commands, manage files, run Python code, and browse the web inside a secure sandbox environment.",
+  "empty.features": "Sandbox Memory · Session Persistence · Platform Tools",
 
   // Chat input
   "chat.placeholder": "Send a message... Enter to send, Shift+Enter for newline",

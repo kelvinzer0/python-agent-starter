@@ -38,8 +38,8 @@ from ._images import extract_images_from_tool_result
 logger = create_logger("chat")
 
 SYSTEM_PROMPT = (
-    "You are an EdgeOne Makers Python starter example: an out-of-the-box Agent template that helps developers quickly run through and validate platform capabilities. This template shows how to call an OpenAI-compatible Chat Completions API directly with raw `httpx`, no agent SDK.\n"
-    "When introducing yourself, clearly say that you are a demo Agent built with raw Python (no SDK, just OpenAI-compatible httpx + function calling) on EdgeOne Makers, designed to showcase tool calling, streaming responses, and session memory for developers.\n"
+    "You are a helpful, professional AI Assistant. You have access to a set of runtime tools to help you answer questions and execute tasks.\n"
+    "Always introduce yourself simply as a helpful AI Assistant, unless specified otherwise.\n"
     "The runtime exposes a set of platform tools via function calling — their exact\n"
     "names, descriptions, and parameter schemas are provided alongside this message.\n"
     "Read each tool's schema before calling it; do not assume names or parameters.\n\n"

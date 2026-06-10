@@ -5,8 +5,8 @@ const zh = {
 
   // Empty state
   "empty.title": "Python Starter",
-  "empty.hint": "我是运行在 EdgeOne 上的 Agent，使用原生 httpx 流式实现聊天和工具调用循环。支持命令行、文件、代码解释器和浏览器沙箱工具。",
-  "empty.features": "EdgeOne Store · 会话记忆 · 平台工具",
+  "empty.hint": "我是您的 AI 助手。我可以在安全的沙箱环境中执行终端命令、管理文件、运行 Python 代码和浏览网页。",
+  "empty.features": "沙箱内存 · 会话持久化 · 平台工具",
 
   // Chat input
   "chat.placeholder": "输入消息... Enter 发送，Shift+Enter 换行",
