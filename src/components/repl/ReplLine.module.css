@@ -19,35 +19,7 @@
   padding: 0;
 }
 
-/* ── motd / welcome ─────────────────────────────────────────── */
-.motd {
-  margin-bottom: var(--space-8);
-  padding: var(--space-8) var(--space-4);
-  text-align: center;
-}
-.motdTitle {
-  color: var(--color-text);
-  font-weight: 700;
-  font-size: var(--font-size-2xl);
-  display: block;
-  margin-bottom: var(--space-2);
-  letter-spacing: -0.025em;
-}
-.motdHint {
-  display: block;
-  color: var(--color-text-secondary);
-  font-size: var(--font-size-sm);
-  max-width: 28rem;
-  margin: 0 auto;
-}
-.motdHelp {
-  display: block;
-  margin-top: var(--space-4);
-  opacity: 0.5;
-  font-size: var(--font-size-xs);
-  font-family: var(--font-mono);
-  color: var(--color-text-muted);
-}
+/* ── motd / welcome — no longer rendered ────────────────────── */
 
 /* ── Chat message: user ─────────────────────────────────────── */
 .user {
@@ -236,7 +208,7 @@
   border: 0;
 }
 
-/* ── tool call line ─────────────────────────────────────────── */
+/* ── tool call line — collapsible panel ─────────────────────── */
 .tool {
   display: flex;
   align-items: center;
@@ -249,6 +221,45 @@
   border-radius: var(--radius-sm);
   margin: var(--space-2) 0;
   border-left: 2px solid var(--color-accent);
+}
+.toolPanel {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0;
+  padding: 0;
+}
+.toolHeader {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  cursor: pointer;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  transition: background 100ms ease;
+}
+.toolHeader:hover {
+  background: rgba(0, 0, 0, 0.03);
+}
+.toolStatus {
+  font-size: 12px;
+  font-weight: 700;
+  flex-shrink: 0;
+  width: 16px;
+  text-align: center;
+}
+.toolStatus--success {
+  color: #22c55e;
+}
+.toolStatus--error {
+  color: var(--color-error);
+}
+.toolStatus--running {
+  color: var(--color-accent);
+  animation: toolRunning 1s ease-in-out infinite;
+}
+@keyframes toolRunning {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
 }
 .toolTs {
   color: var(--color-text-muted);
@@ -279,6 +290,50 @@
   margin-left: auto;
   opacity: 0.5;
   font-size: 0.65rem;
+}
+.chevron {
+  color: var(--color-text-muted);
+  font-size: 10px;
+  transition: transform 150ms ease;
+  flex-shrink: 0;
+}
+.chevronOpen {
+  transform: rotate(90deg);
+}
+.toolBody {
+  background: #f8f9fa;
+  border-top: 1px solid var(--color-border-light);
+  padding: var(--space-2) var(--space-3);
+  margin-top: 0;
+  border-radius: 0 0 var(--radius-sm) var(--radius-sm);
+}
+.toolSection {
+  margin-bottom: var(--space-2);
+}
+.toolSection:last-child {
+  margin-bottom: 0;
+}
+.toolSectionLabel {
+  font-size: 0.65rem;
+  font-weight: 600;
+  color: var(--color-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 2px;
+}
+.toolCode {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  color: var(--color-text);
+  background: var(--color-bg);
+  border: 1px solid var(--color-border-light);
+  border-radius: var(--radius-sm);
+  padding: var(--space-2);
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 300px;
+  overflow-y: auto;
 }
 
 /* ── image line ─────────────────────────────────────────────── */

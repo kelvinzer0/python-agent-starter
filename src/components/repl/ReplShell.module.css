@@ -79,6 +79,30 @@
   border-radius: var(--radius-sm);
 }
 
+.modelSelect {
+  appearance: none;
+  background: var(--color-bg-tertiary);
+  border: 1px solid var(--color-border-light);
+  border-radius: var(--radius-sm);
+  color: var(--color-text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  font-weight: 500;
+  padding: 2px 24px 2px 8px;
+  cursor: pointer;
+  outline: none;
+  transition: border-color 150ms ease;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M3 4.5L6 7.5L9 4.5' stroke='%236b7280' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 6px center;
+}
+.modelSelect:hover {
+  border-color: var(--color-border);
+}
+.modelSelect:focus {
+  border-color: var(--color-primary);
+}
+
 .topbarRight {
   display: flex;
   align-items: center;

@@ -13,10 +13,28 @@
 
 import type { Message, ImageSsePayload } from './types';
 
+export interface ModelOption {
+  id: string;
+  owned_by?: string;
+}
+
+/** Fetch available models from the backend. */
+export async function fetchModels(): Promise<ModelOption[]> {
+  try {
+    const res = await fetch(API.models);
+    if (!res.ok) return [];
+    const data = await res.json().catch(() => null) as { models?: ModelOption[] } | null;
+    return Array.isArray(data?.models) ? data.models! : [];
+  } catch {
+    return [];
+  }
+}
+
 export const API = {
   chat: '/chat',
   chatStop: '/chat/stop',
   history: '/history',
+  models: '/models',
 } as const;
 
 export interface RawSseEvent {
@@ -29,10 +47,22 @@ export interface RawSseEvent {
 export interface StreamCallbacks {
   onTextDelta: (delta: string) => void;
   onToolCalled: (toolName: string) => void;
+  onToolDebug?: (payload: ToolDebugPayload) => void;
   onImage: (payload: ImageSsePayload) => void;
   onDone: () => void;
   onError: (err: Error) => void;
   onRawEvent?: (event: RawSseEvent) => void;
+}
+
+export interface ToolDebugPayload {
+  phase: 'call' | 'result';
+  tool: string;
+  id: string;
+  argumentsPreview?: string;
+  resultPreview?: string;
+  resultLength?: number;
+  durationMs?: number;
+  imageCount?: number;
 }
 
 /** Get conversation history for restoring the chat window after page refresh. */
@@ -66,6 +96,7 @@ export function sendMessageStream(
   message: string,
   callbacks: StreamCallbacks,
   conversationId?: string,
+  model?: string,
 ): AbortController {
   const ctrl = new AbortController();
 
@@ -81,7 +112,7 @@ export function sendMessageStream(
       const res = await fetch(API.chat, {
         method: 'POST',
         headers,
-        body: JSON.stringify({ message }),
+        body: JSON.stringify({ message, model }),
         signal: ctrl.signal,
       });
 
@@ -161,6 +192,20 @@ function dispatchSseChunk(part: string, cb: StreamCallbacks, markDone: () => voi
         break;
       case 'tool_called':
         cb.onToolCalled(parsed.tool);
+        break;
+      case 'tool_debug':
+        if (cb.onToolDebug && typeof parsed?.tool === 'string' && typeof parsed?.id === 'string') {
+          cb.onToolDebug({
+            phase: parsed.phase,
+            tool: parsed.tool,
+            id: parsed.id,
+            argumentsPreview: typeof parsed.argumentsPreview === 'string' ? parsed.argumentsPreview : undefined,
+            resultPreview: typeof parsed.resultPreview === 'string' ? parsed.resultPreview : undefined,
+            resultLength: typeof parsed.resultLength === 'number' ? parsed.resultLength : undefined,
+            durationMs: typeof parsed.durationMs === 'number' ? parsed.durationMs : undefined,
+            imageCount: typeof parsed.imageCount === 'number' ? parsed.imageCount : undefined,
+          });
+        }
         break;
       case 'image':
         if (typeof parsed?.base64 === 'string' && typeof parsed?.imageId === 'string') {

@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { ReplLine } from '../../types';
@@ -40,18 +41,61 @@ interface Props {
   onOpenImage?: (url: string, alt: string) => void;
 }
 
+/** Collapsible tool call sub-component (needs its own useState for expanded). */
+function ToolCallRow({ line }: { line: Extract<ReplLine, { kind: 'tool' }> }) {
+  const { t } = useT();
+  const [expanded, setExpanded] = useState(false);
+  const status = line.status ?? 'running';
+  const statusIcon = status === 'success' ? '✓' : status === 'error' ? '✗' : '◎';
+  const statusCls = status === 'success'
+    ? styles['toolStatus--success']
+    : status === 'error'
+      ? styles['toolStatus--error']
+      : styles['toolStatus--running'];
+  return (
+    <div className={`${styles.line} ${styles.tool} ${styles.toolPanel}`}>
+      <div
+        className={styles.toolHeader}
+        onClick={() => setExpanded(prev => !prev)}
+        role="button"
+        tabIndex={0}
+        onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') setExpanded(prev => !prev); }}
+      >
+        <span className={`${styles.toolStatus} ${statusCls}`}>{statusIcon}</span>
+        <span className={styles.toolName}>{line.tool}</span>
+        {line.argsPreview && !expanded && <span className={styles.toolArgs}>{line.argsPreview}</span>}
+        {typeof line.durationMs === 'number' && (
+          <span className={styles.toolMeta}>· {line.durationMs}ms</span>
+        )}
+        <span className={`${styles.chevron} ${expanded ? styles.chevronOpen : ''}`}>▸</span>
+      </div>
+      {expanded && (
+        <div className={styles.toolBody}>
+          {line.inputArgs && (
+            <div className={styles.toolSection}>
+              <div className={styles.toolSectionLabel}>{t('repl.tool.inputArgs')}</div>
+              <pre className={styles.toolCode}>{line.inputArgs}</pre>
+            </div>
+          )}
+          {line.outputResult && (
+            <div className={styles.toolSection}>
+              <div className={styles.toolSectionLabel}>{t('repl.tool.outputResult')}</div>
+              <pre className={styles.toolCode}>{line.outputResult}</pre>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function ReplLineRow({ line, onOpenImage }: Props) {
   const { t } = useT();
 
   switch (line.kind) {
     case 'motd':
-      return (
-        <div className={`${styles.line} ${styles.motd}`}>
-          <span className={styles.motdTitle}>{t('repl.motd.title')}</span>
-          <span className={styles.motdHint}>{t('repl.motd.tools')}</span>
-          <span className={styles.motdHelp}>{t('repl.motd.help')}</span>
-        </div>
-      );
+      // motd is no longer rendered as a chat line; action buttons replace it
+      return null;
 
     case 'user':
       return (
@@ -84,20 +128,7 @@ export default function ReplLineRow({ line, onOpenImage }: Props) {
       );
 
     case 'tool':
-      return (
-        <div className={`${styles.line} ${styles.tool}`}>
-          <span className={styles.toolTs}>[{formatTime(line.ts)}]</span>
-          <span className={styles.toolDollar}>$</span>
-          <span className={styles.toolName}>{line.tool}</span>
-          {line.argsPreview && <span className={styles.toolArgs}>{line.argsPreview}</span>}
-          {line.resultSummary && (
-            <span className={styles.toolMeta}>⤷ {line.resultSummary}</span>
-          )}
-          {typeof line.durationMs === 'number' && (
-            <span className={styles.toolMeta}>· {line.durationMs}ms</span>
-          )}
-        </div>
-      );
+      return <ToolCallRow line={line} />;
 
     case 'image': {
       const { image, toolName } = line;
@@ -153,10 +184,8 @@ export default function ReplLineRow({ line, onOpenImage }: Props) {
       );
 
     case 'sysHint': {
-      const tone = line.tone ?? 'dim';
-      const cls =
-        tone === 'warn' ? styles['sysHint--warn'] : tone === 'error' ? styles['sysHint--error'] : '';
-      return <div className={`${styles.line} ${styles.sysHint} ${cls}`}>{line.text}</div>;
+      // sysHint is no longer rendered as a visible line
+      return null;
     }
 
     default: {

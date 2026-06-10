@@ -6,6 +6,11 @@ import { classify } from './keymap';
 import type { ReplAction } from './keymap';
 import styles from './ReplShell.module.css';
 
+interface ModelOption {
+  id: string;
+  owned_by?: string;
+}
+
 interface Props {
   modelName: string;
   loading: boolean;
@@ -15,6 +20,9 @@ interface Props {
   bodyRef?: React.RefObject<HTMLDivElement>;
   children: ReactNode;
   footer: ReactNode;
+  availableModels?: ModelOption[];
+  selectedModel?: string;
+  onModelChange?: (model: string) => void;
 }
 
 /**
@@ -38,6 +46,9 @@ export default function ReplShell({
   bodyRef,
   children,
   footer,
+  availableModels,
+  selectedModel,
+  onModelChange,
 }: Props) {
   const { t } = useT();
   const internalBodyRef = useRef<HTMLDivElement>(null);
@@ -75,7 +86,20 @@ export default function ReplShell({
         <div className={styles.banner}>
           <span className={styles.bannerName}>Chat</span>
           <span className={styles.bannerSep}>·</span>
-          <span className={styles.bannerModel}>{modelName}</span>
+          {availableModels && availableModels.length > 0 && onModelChange ? (
+            <select
+              className={styles.modelSelect}
+              value={selectedModel ?? ''}
+              onChange={e => onModelChange(e.target.value)}
+              aria-label="Select model"
+            >
+              {availableModels.map(m => (
+                <option key={m.id} value={m.id}>{m.id}</option>
+              ))}
+            </select>
+          ) : (
+            <span className={styles.bannerModel}>{modelName}</span>
+          )}
         </div>
         <div className={styles.topbarRight}>
           <LangToggle />

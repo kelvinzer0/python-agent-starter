@@ -1,31 +1,32 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { ChangeEvent, KeyboardEvent } from 'react';
 import { useT } from '../../i18n';
+import type { ReplAction } from './keymap';
+import HelpPanel from './HelpPanel';
 import styles from './ReplPrompt.module.css';
 
 interface Props {
   loading: boolean;
   onSubmit: (text: string) => void;
-  onStop: () => void;
   /** Called by App when Ctrl+C in idle mode requests "clear input". */
   registerClearInput: (clear: () => void) => void;
   inputHistory: string[];
+  onAction: (action: ReplAction) => void;
 }
-
-const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
 export default function ReplPrompt({
   loading,
   onSubmit,
-  onStop,
   registerClearInput,
   inputHistory,
+  onAction,
 }: Props) {
   const { t } = useT();
   const [value, setValue] = useState('');
   const [historyIdx, setHistoryIdx] = useState<number | null>(null);
-  const [spinnerFrame, setSpinnerFrame] = useState(0);
+  const [helpOpen, setHelpOpen] = useState(false);
   const taRef = useRef<HTMLTextAreaElement>(null);
+  const promptRef = useRef<HTMLDivElement>(null);
 
   // Expose a "clear input" handle to App for Ctrl+C behavior.
   useEffect(() => {
@@ -48,14 +49,17 @@ export default function ReplPrompt({
     if (!loading) taRef.current?.focus();
   }, [loading]);
 
-  // Spinner animation while loading.
+  // Close help panel on outside click
   useEffect(() => {
-    if (!loading) return;
-    const id = window.setInterval(() => {
-      setSpinnerFrame(f => (f + 1) % SPINNER_FRAMES.length);
-    }, 80);
-    return () => window.clearInterval(id);
-  }, [loading]);
+    if (!helpOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (promptRef.current && !promptRef.current.contains(e.target as Node)) {
+        setHelpOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [helpOpen]);
 
   function commit() {
     const text = value.trim();
@@ -70,6 +74,13 @@ export default function ReplPrompt({
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       commit();
+      return;
+    }
+
+    // Toggle help with Ctrl+/
+    if ((e.ctrlKey || e.metaKey) && e.key === '/') {
+      e.preventDefault();
+      setHelpOpen(prev => !prev);
       return;
     }
 
@@ -108,9 +119,21 @@ export default function ReplPrompt({
     if (historyIdx !== null) setHistoryIdx(null);
   }
 
+  function handleAction(action: ReplAction) {
+    if (action === 'showHelp') {
+      setHelpOpen(prev => !prev);
+    } else {
+      onAction(action);
+    }
+  }
+
   return (
-    <div className={styles.prompt}>
+    <div className={styles.prompt} ref={promptRef}>
+      {helpOpen && (
+        <HelpPanel onClose={() => setHelpOpen(false)} />
+      )}
       <div className={styles.inputWrap}>
+        <span className={styles.statusDot} data-running={loading || undefined} />
         <textarea
           ref={taRef}
           rows={1}
@@ -119,25 +142,50 @@ export default function ReplPrompt({
           disabled={loading}
           onChange={onChange}
           onKeyDown={onKeyDown}
-          placeholder={loading ? '' : t('repl.prompt.placeholder')}
+          placeholder={t('repl.prompt.placeholder')}
           spellCheck={false}
           autoComplete="off"
           autoCorrect="off"
           autoCapitalize="off"
         />
       </div>
-      <div className={`${styles.status} ${loading ? styles['status--running'] : ''}`}>
-        {loading ? (
-          <>
-            <span className={styles.spinner}>{SPINNER_FRAMES[spinnerFrame]}</span>
-            <span>{t('repl.status.running')}</span>
-            <button type="button" className={styles.stopBtn} onClick={onStop}>
-              ■ Stop
-            </button>
-          </>
-        ) : (
-          <span>{t('repl.status.idle')}</span>
-        )}
+      <div className={styles.toolbar}>
+        <button
+          type="button"
+          className={styles.toolBtn}
+          onClick={() => handleAction('abort')}
+          title={t('repl.action.abort')}
+        >
+          <span className={styles.toolBtnIcon}>⨯</span>
+          <span className={styles.toolBtnLabel}>{t('repl.action.abort')}</span>
+        </button>
+        <button
+          type="button"
+          className={styles.toolBtn}
+          onClick={() => handleAction('clearScreen')}
+          title={t('repl.action.clear')}
+        >
+          <span className={styles.toolBtnIcon}>⌫</span>
+          <span className={styles.toolBtnLabel}>{t('repl.action.clear')}</span>
+        </button>
+        <button
+          type="button"
+          className={styles.toolBtn}
+          onClick={() => handleAction('toggleVerbose')}
+          title={t('repl.action.trace')}
+        >
+          <span className={styles.toolBtnIcon}>◈</span>
+          <span className={styles.toolBtnLabel}>{t('repl.action.trace')}</span>
+        </button>
+        <button
+          type="button"
+          className={styles.toolBtn}
+          onClick={() => handleAction('showHelp')}
+          title={t('repl.action.help')}
+        >
+          <span className={styles.toolBtnIcon}>?</span>
+          <span className={styles.toolBtnLabel}>{t('repl.action.help')}</span>
+        </button>
       </div>
     </div>
   );

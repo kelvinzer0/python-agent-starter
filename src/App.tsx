@@ -1,7 +1,8 @@
 import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import type { ImageAttachment, ImageSsePayload, Message, ReplLine, TurnMeta } from './types';
-import type { RawSseEvent } from './api';
-import { fetchConversationHistory, sendMessageStream, stopAgent } from './api';
+import type { RawSseEvent, ToolDebugPayload } from './api';
+import { fetchConversationHistory, fetchModels, sendMessageStream, stopAgent } from './api';
+import type { ModelOption } from './api';
 import { I18nProvider, useT } from './i18n';
 import ReplShell from './components/repl/ReplShell';
 import ReplStream from './components/repl/ReplStream';
@@ -11,9 +12,7 @@ import {
   makeDone,
   makeError,
   makeImage,
-  makeMotd,
   makeRestored,
-  makeSysHint,
   makeText,
   makeTool,
   makeUser,
@@ -33,7 +32,6 @@ import type { ReplAction } from './components/repl/keymap';
 import styles from './App.module.css';
 
 const CONVERSATION_ID_STORAGE_KEY = 'eo_conversation_id';
-const MODEL_BANNER = 'deepseek-v4-flash'; // visual only; matches default in agents/_model.py
 const MAX_INPUT_HISTORY = 50;
 
 function getExistingConversationId(): string | null {
@@ -161,7 +159,7 @@ let _historyFetchInFlight = false;
 function AppInner() {
   const { t } = useT();
 
-  const [lines, setLines] = useState<ReplLine[]>(() => [makeMotd()]);
+  const [lines, setLines] = useState<ReplLine[]>([]);
   const [traceEvents, setTraceEvents] = useState<RawSseEvent[]>([]);
   const [loading, setLoading] = useState(false);
   const [historyLoading, setHistoryLoading] = useState(true);
@@ -174,6 +172,9 @@ function AppInner() {
   // Using a single piece of state instead of inserting+filtering a placeholder
   // row across 5 SSE handlers — see PendingCaret.tsx for the rationale.
   const [pendingTurnId, setPendingTurnId] = useState<string | null>(null);
+  const [availableModels, setAvailableModels] = useState<ModelOption[]>([]);
+  const [selectedModel, setSelectedModel] = useState<string>('');
+  const selectedModelRef = useRef<string>('');
 
   const turnMetaRef = useRef<TurnMeta | null>(null);
   const abortCtrlRef = useRef<AbortController | null>(null);
@@ -240,6 +241,20 @@ function AppInner() {
     };
   }, []);
 
+  // Fetch available models on mount
+  useEffect(() => {
+    fetchModels().then(models => {
+      setAvailableModels(models);
+      if (models.length > 0 && !selectedModelRef.current) {
+        const first = models[0].id;
+        setSelectedModel(first);
+        selectedModelRef.current = first;
+      }
+    }).catch(() => {
+      // Non-critical — model dropdown will show fallback name
+    });
+  }, []);
+
   // ─── SSE handlers (turn-scoped) ─────────────────────────────────────
   const finishStream = useCallback(() => {
     setLoading(false);
@@ -261,8 +276,7 @@ function AppInner() {
       // Corrupt base64 → no image, but the stream continues. Surface a hint
       // so the user knows something was dropped.
       console.warn('[image] base64 decode failed:', err);
-      const hint = makeSysHint(`[image broken: ${payload.imageId.slice(0, 8)}]`, 'warn');
-      setLines(prev => [...prev, hint]);
+      // Image broken - no longer rendered as a sysHint line
       return;
     }
 
@@ -364,9 +378,53 @@ function AppInner() {
             meta.toolRounds += 1;
             // Build the line OUTSIDE the updater so its id is stable across
             // StrictMode's double invocation.
-            const toolLine = makeTool(meta.turnId, toolName);
+            const toolLine = makeTool(meta.turnId, toolName, { status: 'running' });
             setPendingTurnId(null);
             setLines(prev => [...prev, toolLine]);
+          },
+
+          onToolDebug: (payload: ToolDebugPayload) => {
+            if (payload.phase === 'call') {
+              // Merge call-phase data into the most recent matching tool line
+              const toolName = payload.tool;
+              setLines(prev => {
+                // Find the last tool line matching this tool name
+                for (let i = prev.length - 1; i >= 0; i--) {
+                  const l = prev[i];
+                  if (l.kind === 'tool' && l.tool === toolName) {
+                    const updated = {
+                      ...l,
+                      argsPreview: payload.argumentsPreview ?? l.argsPreview,
+                      inputArgs: payload.argumentsPreview ?? l.inputArgs,
+                    };
+                    return [...prev.slice(0, i), updated, ...prev.slice(i + 1)];
+                  }
+                }
+                return prev;
+              });
+            } else if (payload.phase === 'result') {
+              // Merge result-phase data and set status
+              const toolName = payload.tool;
+              const durationMs = payload.durationMs;
+              setLines(prev => {
+                for (let i = prev.length - 1; i >= 0; i--) {
+                  const l = prev[i];
+                  if (l.kind === 'tool' && l.tool === toolName) {
+                    const updated = {
+                      ...l,
+                      status: 'success' as const,
+                      durationMs: durationMs ?? l.durationMs,
+                      outputResult: payload.resultPreview ?? l.outputResult,
+                      resultSummary: payload.resultPreview
+                        ? (payload.resultPreview.length > 80 ? payload.resultPreview.slice(0, 80) + '…' : payload.resultPreview)
+                        : l.resultSummary,
+                    };
+                    return [...prev.slice(0, i), updated, ...prev.slice(i + 1)];
+                  }
+                }
+                return prev;
+              });
+            }
           },
 
           onImage: payload => {
@@ -421,7 +479,13 @@ function AppInner() {
               // Even on error, collapse whatever text the model managed to
               // emit so the user sees rendered markdown rather than a
               // dangling streaming run alongside the error line.
-              const collapsed = meta ? collapseTurnTextToMarkdown(prev, meta.turnId) : prev;
+              let collapsed = meta ? collapseTurnTextToMarkdown(prev, meta.turnId) : prev;
+              // Mark any still-running tool lines as error
+              collapsed = collapsed.map(l =>
+                l.kind === 'tool' && l.status === 'running'
+                  ? { ...l, status: 'error' as const }
+                  : l,
+              );
               return padLine ? [...collapsed, errLine, padLine] : [...collapsed, errLine];
             });
             if (meta) turnMetaRef.current = null;
@@ -429,6 +493,7 @@ function AppInner() {
           },
         },
         conversationIdRef.current,
+        selectedModelRef.current || undefined,
       );
 
       abortCtrlRef.current = ctrl;
@@ -443,35 +508,28 @@ function AppInner() {
       abortCtrlRef.current = null;
     }
     const meta = turnMetaRef.current;
-    const abortLine = makeSysHint(t('repl.status.aborted'), 'warn');
     // Collapse any partial text the model emitted before abort so the row
     // settles into its final markdown form (matches onDone / onError).
     setLines(prev => {
       const collapsed = meta ? collapseTurnTextToMarkdown(prev, meta.turnId) : prev;
-      return [...collapsed, abortLine];
+      return collapsed;
     });
     setLoading(false);
     setPendingTurnId(null);
 
-    stopAgent(conversationIdRef.current).then(ok => {
-      const ackLine = makeSysHint(
-        ok ? t('repl.status.stopOk') : t('repl.status.stopFail'),
-        ok ? 'dim' : 'error',
-      );
-      setLines(prev => [...prev, ackLine]);
+    stopAgent(conversationIdRef.current).catch(() => {
+      // stop failure is non-critical
     });
     if (meta) turnMetaRef.current = null;
-  }, [t]);
+  }, []);
 
   const handleClearScreen = useCallback(() => {
     // Clearing the screen drops references to all currently-rendered image
     // rows, so revoke their blob URLs to release memory. The IDB records are
     // intentionally preserved — server history is preserved on /clear too.
     revokeAllObjectUrls();
-    const motd = makeMotd();
-    const hint = makeSysHint(t('repl.status.cleared'));
-    setLines([motd, hint]);
-  }, [t]);
+    setLines([]);
+  }, []);
 
   const handleResetSession = useCallback(() => {
     if (abortCtrlRef.current) {
@@ -492,10 +550,8 @@ function AppInner() {
     void deleteConversationImages(oldCid).catch(err => {
       console.warn('[image-store] failed to delete old conversation images:', err);
     });
-    const motd = makeMotd();
-    const hint = makeSysHint(t('repl.status.reset'), 'warn');
-    setLines([motd, hint]);
-  }, [t]);
+    setLines([]);
+  }, []);
 
   const handleToggleVerbose = useCallback(() => {
     // Compute next value via ref to avoid nesting setLines inside a setVerbose
@@ -503,15 +559,11 @@ function AppInner() {
     const next = !verboseRef.current;
     verboseRef.current = next;
     setVerbose(next);
-    const hint = makeSysHint(next ? t('repl.status.verboseOn') : t('repl.status.verboseOff'));
-    setLines(prev => [...prev, hint]);
-  }, [t]);
+  }, []);
 
   const handleShowHelp = useCallback(() => {
-    const h1 = makeSysHint(`— ${t('repl.help.title')} —`);
-    const h2 = makeSysHint(t('repl.help.body'));
-    setLines(prev => [...prev, h1, h2]);
-  }, [t]);
+    // Help is now shown as a popover from the Help button, no longer as chat lines
+  }, []);
 
   const handleOpenImage = useCallback((url: string, alt: string) => {
     setLightboxUrl(url);
@@ -560,18 +612,24 @@ function AppInner() {
   return (
     <div className={styles.app}>
       <ReplShell
-        modelName={MODEL_BANNER}
+        modelName={selectedModel || 'Agent'}
         loading={loading}
         historyLoading={historyLoading}
         historyHint={historyHint}
         onAction={onAction}
+        availableModels={availableModels}
+        selectedModel={selectedModel}
+        onModelChange={(model: string) => {
+          setSelectedModel(model);
+          selectedModelRef.current = model;
+        }}
         footer={
           <ReplPrompt
             loading={loading}
             onSubmit={handleSend}
-            onStop={handleStop}
             registerClearInput={registerClearInput}
             inputHistory={inputHistory}
+            onAction={onAction}
           />
         }
       >

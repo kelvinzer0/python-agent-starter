@@ -76,6 +76,9 @@ async def handler(context: Any) -> AsyncGenerator[str, None]:
 
     body = context.request.body
     message = body.get("message") if isinstance(body, dict) else None
+    # Allow request to override the default model
+    request_model = body.get("model") if isinstance(body, dict) else None
+    model = request_model or MODEL_CONFIG["model"]
 
     # ── Tracer: set request-level attributes ──
     context.tracer.set_attributes({
@@ -138,7 +141,7 @@ async def handler(context: Any) -> AsyncGenerator[str, None]:
     base_url = MODEL_CONFIG["base_url"].rstrip("/")
     url = f"{base_url}/chat/completions"
 
-    logger.log(f"[handler] streaming from: {url}, model: {MODEL_CONFIG['model']}, tools: {tool_registry.has_tools()}")
+    logger.log(f"[handler] streaming from: {url}, model: {model}, tools: {tool_registry.has_tools()}")
 
     assistant_content = ""
     cancelled = False
@@ -157,7 +160,7 @@ async def handler(context: Any) -> AsyncGenerator[str, None]:
 
                 # Build payload
                 payload: dict[str, Any] = {
-                    "model": MODEL_CONFIG["model"],
+                    "model": model,
                     "messages": messages,
                     "stream": True,
                     "stream_options": {"include_usage": True},
@@ -171,7 +174,7 @@ async def handler(context: Any) -> AsyncGenerator[str, None]:
                 # ── Tracer: LLM request span ──
                 llm_span = context.tracer.start_span(f"llm.request.round_{round_idx + 1}", {
                     "openinference.span.kind": "LLM",
-                    "llm.model_name": MODEL_CONFIG["model"],
+                    "llm.model_name": model,
                     "llm.provider": "openai",
                     "llm.request.type": "chat",
                     "llm.request.message_count": len(messages),

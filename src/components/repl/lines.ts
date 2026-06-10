@@ -43,8 +43,21 @@ export function makeMarkdown(
   };
 }
 
-export function makeTool(turnId: string, tool: string): ReplLine {
-  return { kind: 'tool', id: newId(), turnId, tool, ts: Date.now() };
+export function makeTool(turnId: string, tool: string, opts: {
+  argsPreview?: string;
+  status?: 'running' | 'success' | 'error';
+  inputArgs?: string;
+} = {}): ReplLine {
+  return {
+    kind: 'tool',
+    id: newId(),
+    turnId,
+    tool,
+    ts: Date.now(),
+    argsPreview: opts.argsPreview,
+    status: opts.status ?? 'running',
+    inputArgs: opts.inputArgs,
+  };
 }
 
 export function makeImage(
