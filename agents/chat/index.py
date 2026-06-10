@@ -338,10 +338,28 @@ async def sync_workspace_from_sandbox(context: Any, tool_registry: ToolRegistry)
         logger.log(f"[workspace] Failed to save updated workspace to store: {e}")
 
 
+def get_available_skills() -> list[str]:
+    """Retrieve all subdirectory names inside the local project skills directory."""
+    project_root = Path(__file__).resolve().parent.parent.parent
+    skills_dir = project_root / "skills"
+    if not skills_dir.exists():
+        skills_dir = Path.cwd() / "skills"
+        
+    if skills_dir.exists() and skills_dir.is_dir():
+        try:
+            return sorted([d.name for d in skills_dir.iterdir() if d.is_dir()])
+        except Exception:
+            pass
+    return []
+
+
 def build_system_prompt(files_dict: dict[str, str]) -> str:
     """Builds a dynamic system prompt containing the base instructions and the
     contents of all active workspace markdown files to shape identity and preferences.
     """
+    skills_list = get_available_skills()
+    skills_str = ", ".join(skills_list) if skills_list else "None"
+
     base_prompt = (
         "You are AI Studio Warung Lakku, a smart and helpful agent running inside a sandboxed workspace.\n"
         "You have access to a set of runtime tools to help you answer questions and execute tasks.\n"
@@ -368,8 +386,9 @@ def build_system_prompt(files_dict: dict[str, str]) -> str:
         "You can read, write, or delete files in the `/workspace/` directory using your file tools (e.g., using paths like `/workspace/IDENTITY.md` or `/workspace/USER.md`).\n"
         "If you make changes to these files, they will be loaded into your system prompt in subsequent turns/sessions.\n\n"
         "=== SKILLS INSTRUCTIONS ===\n"
-        "You have a read-only `/skills/` directory containing operational manuals for complex tasks (e.g., `/skills/onboard/SKILL.md`, `/skills/excel-xlsx/SKILL.md`, `/skills/frontend-design/SKILL.md`, etc.).\n"
-        "You can list files in `/skills/` or read these manuals to understand how to execute specific tasks when required. Do not guess how a skill works; read its SKILL.md file if you need to use it.\n\n"
+        "You have a read-only `/skills/` directory containing operational manuals for complex tasks.\n"
+        f"Available skills you can load: {skills_str}.\n"
+        "You can read any skill manual using files_read (e.g., `/skills/taste-skill/SKILL.md` or `/skills/excel-xlsx/SKILL.md`) to learn how to perform specific tasks. Do not guess how a skill works; read its SKILL.md file if you need to use it.\n\n"
     )
 
     files_descriptions = {
