@@ -36,6 +36,41 @@ const CONVERSATION_ID_STORAGE_KEY = 'eo_conversation_id';
 const SESSIONS_STORAGE_KEY = 'eo_chat_sessions';
 const MAX_INPUT_HISTORY = 50;
 
+/** Build the localStorage key used to cache messages for a conversation. */
+function messagesStorageKey(conversationId: string): string {
+  return `chat_messages_${conversationId}`;
+}
+
+/** Persist an array of Message objects to localStorage for a conversation. */
+function cacheMessages(conversationId: string, messages: Message[]): void {
+  try {
+    localStorage.setItem(messagesStorageKey(conversationId), JSON.stringify(messages));
+  } catch {
+    // Quota or private-mode failure is non-critical
+  }
+}
+
+/** Read cached Message[] from localStorage; returns [] on miss or parse error. */
+function readCachedMessages(conversationId: string): Message[] {
+  try {
+    const raw = localStorage.getItem(messagesStorageKey(conversationId));
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Remove the cached messages for a conversation from localStorage. */
+function removeCachedMessages(conversationId: string): void {
+  try {
+    localStorage.removeItem(messagesStorageKey(conversationId));
+  } catch {
+    // Non-critical
+  }
+}
+
 function getStoredSessions(): ChatSessionInfo[] {
   try {
     const data = localStorage.getItem(SESSIONS_STORAGE_KEY);
@@ -168,6 +203,20 @@ function tplFill(s: string, vars: Record<string, string | number>): string {
   return s.replace(/\{(\w+)\}/g, (_, k) => String(vars[k] ?? `{${k}}`));
 }
 
+/** Extract cacheable Message[] from the current ReplLine[].
+ *  Only `user` and `markdown` lines carry meaningful content for the cache. */
+function linesToMessages(lines: ReplLine[]): Message[] {
+  const out: Message[] = [];
+  for (const l of lines) {
+    if (l.kind === 'user') {
+      out.push({ id: l.id, role: 'user', content: l.text, timestamp: l.ts });
+    } else if (l.kind === 'markdown') {
+      out.push({ id: l.id, role: 'assistant', content: l.text, timestamp: l.ts });
+    }
+  }
+  return out;
+}
+
 function AppInner() {
   const { t } = useT();
 
@@ -243,10 +292,22 @@ function AppInner() {
     }
 
     setHistoryLoading(true);
-    setLines([]);
     setTraceEvents([]);
     const cid = conversationId;
 
+    // ── Instant restore from localStorage cache ──
+    const cached = readCachedMessages(cid);
+    if (cached.length > 0) {
+      const textLines = historyToLines(cached);
+      if (textLines.length > 0) {
+        const marker = makeRestored(cached.length);
+        setLines([...textLines, marker]);
+      }
+    } else {
+      setLines([]);
+    }
+
+    // ── Background fetch to validate / refresh ──
     Promise.all([
       fetchConversationHistory(cid),
       loadConversationImages(cid).catch(err => {
@@ -256,6 +317,12 @@ function AppInner() {
     ])
       .then(([history, imageRecords]) => {
         if (conversationIdRef.current !== cid) return;
+
+        // Update localStorage cache with fresh server data
+        if (history.length > 0) {
+          cacheMessages(cid, history);
+        }
+
         const textLines = historyToLines(history);
         const imageLines = imagesToLines(imageRecords);
         const merged = mergeByTs(textLines, imageLines);
@@ -289,7 +356,7 @@ function AppInner() {
 
   // Fetch available models on mount
   useEffect(() => {
-    fetchModels().then(models => {
+    fetchModels(conversationId).then(models => {
       setAvailableModels(models);
       if (models.length > 0 && !selectedModelRef.current) {
         const first = models[0].id;
@@ -370,7 +437,15 @@ function AppInner() {
       // first agent output (text_delta/tool_called/image), or on
       // done/error/abort. See PendingCaret.tsx for rationale.
       const turnId = crypto.randomUUID();
-      setLines(prev => [...prev, makeUser(text)]);
+      const userLine = makeUser(text);
+      setLines(prev => {
+        const next = [...prev, userLine];
+        // Cache the user message immediately so it's available on session switch
+        const cid = conversationIdRef.current;
+        const msgs = linesToMessages(next);
+        if (msgs.length > 0) cacheMessages(cid, msgs);
+        return next;
+      });
       setInputHistory(prev => {
         const next = [...prev.filter(s => s !== text), text];
         return next.length > MAX_INPUT_HISTORY ? next.slice(-MAX_INPUT_HISTORY) : next;
@@ -534,10 +609,14 @@ function AppInner() {
             const meta = turnMetaRef.current;
             if (meta) {
               const doneLine = makeDone(meta.turnId, meta.startTs, meta.toolRounds);
-              setLines(prev => [
-                ...collapseTurnTextToMarkdown(prev, meta.turnId),
-                doneLine,
-              ]);
+              setLines(prev => {
+                const next = [...collapseTurnTextToMarkdown(prev, meta.turnId), doneLine];
+                // Cache the completed conversation to localStorage
+                const cid = conversationIdRef.current;
+                const msgs = linesToMessages(next);
+                if (msgs.length > 0) cacheMessages(cid, msgs);
+                return next;
+              });
               turnMetaRef.current = null;
             }
             finishStream();
@@ -559,7 +638,12 @@ function AppInner() {
                   ? { ...l, status: 'error' as const }
                   : l,
               );
-              return padLine ? [...collapsed, errLine, padLine] : [...collapsed, errLine];
+              const next = padLine ? [...collapsed, errLine, padLine] : [...collapsed, errLine];
+              // Cache partial conversation even on error
+              const cid = conversationIdRef.current;
+              const msgs = linesToMessages(next);
+              if (msgs.length > 0) cacheMessages(cid, msgs);
+              return next;
             });
             if (meta) turnMetaRef.current = null;
             finishStream();
@@ -609,6 +693,7 @@ function AppInner() {
   }, []);
 
   const handleSelectSession = useCallback((id: string) => {
+    localStorage.setItem(CONVERSATION_ID_STORAGE_KEY, id);
     setConversationId(id);
   }, []);
 
@@ -626,6 +711,7 @@ function AppInner() {
     setConversationId(newId);
     setLines([]);
     setTraceEvents([]);
+    removeCachedMessages(newId);
 
     setSessions(prev => {
       const exists = prev.some(s => s.id === newId);
@@ -645,6 +731,7 @@ function AppInner() {
     
     // Revoke images for deleted session
     deleteConversationImages(id).catch(() => {});
+    removeCachedMessages(id);
 
     if (id === conversationIdRef.current) {
       const remaining = getStoredSessions().filter(s => s.id !== id);
@@ -672,6 +759,7 @@ function AppInner() {
       // Clear all images from IndexedDB
       sessions.forEach(s => {
         deleteConversationImages(s.id).catch(() => {});
+        removeCachedMessages(s.id);
       });
 
       // Wipe localStorage keys

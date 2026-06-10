@@ -4,7 +4,7 @@
  * Route mapping (file → route):
  *   agents/chat/index.py             → POST /chat          Main chat endpoint (SSE streaming)
  *   agents/chat/stop.py              → POST /chat/stop     Abort the active agent run
- *   cloud-functions/history/index.py → POST /history       Get conversation history (stateless cloud function)
+ *   agents/history/index.py           → POST /history       Get conversation history (agents runtime)
  *
  * This file defines all API paths and request wrappers. The frontend is
  * agnostic to backend language — node-starter and python-starter share the
@@ -19,9 +19,13 @@ export interface ModelOption {
 }
 
 /** Fetch available models from the backend. */
-export async function fetchModels(): Promise<ModelOption[]> {
+export async function fetchModels(conversationId?: string): Promise<ModelOption[]> {
   try {
-    const res = await fetch(API.models);
+    const headers: Record<string, string> = {};
+    if (conversationId) {
+      headers['makers-conversation-id'] = conversationId;
+    }
+    const res = await fetch(API.models, { headers });
     if (!res.ok) return [];
     const data = await res.json().catch(() => null) as { models?: ModelOption[] } | null;
     return Array.isArray(data?.models) ? data.models! : [];
@@ -74,7 +78,7 @@ export async function fetchConversationHistory(conversationId: string): Promise<
         'Content-Type': 'application/json',
         'makers-conversation-id': conversationId,
       },
-      body: JSON.stringify({}),
+      body: JSON.stringify({ conversation_id: conversationId }),
     });
 
     if (!res.ok) return [];
