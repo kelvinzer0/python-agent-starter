@@ -356,7 +356,7 @@ function AppInner() {
 
   // Fetch available models on mount
   useEffect(() => {
-    fetchModels().then(models => {
+    fetchModels(conversationId).then(models => {
       setAvailableModels(models);
       if (models.length > 0 && !selectedModelRef.current) {
         const first = models[0].id;

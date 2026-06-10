@@ -19,9 +19,13 @@ export interface ModelOption {
 }
 
 /** Fetch available models from the backend. */
-export async function fetchModels(): Promise<ModelOption[]> {
+export async function fetchModels(conversationId?: string): Promise<ModelOption[]> {
   try {
-    const res = await fetch(API.models);
+    const headers: Record<string, string> = {};
+    if (conversationId) {
+      headers['makers-conversation-id'] = conversationId;
+    }
+    const res = await fetch(API.models, { headers });
     if (!res.ok) return [];
     const data = await res.json().catch(() => null) as { models?: ModelOption[] } | null;
     return Array.isArray(data?.models) ? data.models! : [];
