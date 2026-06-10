@@ -27,6 +27,8 @@ import time
 from pathlib import Path
 import inspect
 import json
+import zipfile
+import io
 
 import httpx
 
@@ -126,6 +128,107 @@ async def sandbox_read_file(tool_registry: ToolRegistry, path: str) -> str | Non
     if isinstance(res, dict) and "content" in res:
         return str(res["content"])
     return str(res)
+
+
+def find_command_tool_name(tool_registry: ToolRegistry) -> str | None:
+    """Dynamically look for the correct command/exec tool in the registered tools."""
+    for name in tool_registry._handlers.keys():
+        name_lower = name.lower()
+        if "command" in name_lower or "exec" in name_lower or "run" in name_lower:
+            if "file" not in name_lower and "fs" not in name_lower:
+                return name
+    # Fallback standard name
+    if "commands_run" in tool_registry._handlers:
+        return "commands_run"
+    return None
+
+
+async def run_sandbox_command(tool_registry: ToolRegistry, command: str) -> str | None:
+    """Directly execute a shell command in the sandbox container."""
+    tool_name = find_command_tool_name(tool_registry)
+    if not tool_name:
+        return None
+    params = get_tool_param_keys(tool_registry, tool_name)
+    cmd_key = "command"
+    if "cmd" in params:
+        cmd_key = "cmd"
+    args = {cmd_key: command}
+    res = await tool_registry.execute_raw(tool_name, json.dumps(args))
+    if isinstance(res, dict) and "error" in res:
+        return None
+    if isinstance(res, str):
+        return res
+    if isinstance(res, dict) and "output" in res:
+        return str(res["output"])
+    return str(res)
+
+
+async def sync_skills_to_sandbox(tool_registry: ToolRegistry) -> None:
+    """Sync the project's local skills folder to the sandbox's /skills directory.
+    Uses base64-encoded zip file sync to make it fast and support subdirectories.
+    """
+    # 1. Check if SKILL.md already exists in sandbox (e.g. /skills/onboard/SKILL.md)
+    exists = await sandbox_read_file(tool_registry, "/skills/onboard/SKILL.md")
+    if exists is not None:
+        logger.log("[skills] Skills already exist in sandbox. Skipping sync.")
+        return
+
+    # 2. Package local skills directory into a zip in memory
+    project_root = Path(__file__).resolve().parent.parent.parent
+    skills_dir = project_root / "skills"
+    if not skills_dir.exists():
+        skills_dir = Path.cwd() / "skills"
+    if not skills_dir.exists():
+        logger.log("[skills] Local skills folder not found!")
+        return
+
+    logger.log("[skills] Packaging skills folder...")
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
+        for file_path in skills_dir.glob("**/*"):
+            if file_path.is_file():
+                if "node_modules" in file_path.parts:
+                    continue
+                relative_path = file_path.relative_to(skills_dir)
+                zip_file.write(file_path, relative_path)
+    
+    zip_bytes = zip_buffer.getvalue()
+    import base64
+    zip_b64 = base64.b64encode(zip_bytes).decode("utf-8")
+    
+    # 3. Write base64 content to /tmp/skills.zip.b64 in sandbox
+    logger.log("[skills] Writing b64 zip to sandbox...")
+    await sandbox_write_file(tool_registry, "/tmp/skills.zip.b64", zip_b64)
+    
+    # 4. Write extract script to /tmp/extract.py in sandbox
+    extract_script = """
+import base64
+import zipfile
+import os
+
+try:
+    with open("/tmp/skills.zip.b64", "r") as f:
+        b64_data = f.read()
+    zip_data = base64.b64decode(b64_data)
+    with open("/tmp/skills.zip", "wb") as f:
+        f.write(zip_data)
+        
+    os.makedirs("/skills", exist_ok=True)
+    with zipfile.ZipFile("/tmp/skills.zip", "r") as z:
+        z.extractall("/skills")
+    print("SUCCESS")
+except Exception as e:
+    print("ERROR:", str(e))
+"""
+    await sandbox_write_file(tool_registry, "/tmp/extract.py", extract_script)
+    
+    # 5. Execute extract script in sandbox
+    logger.log("[skills] Extracting skills zip inside sandbox...")
+    res = await run_sandbox_command(tool_registry, "python3 /tmp/extract.py")
+    logger.log(f"[skills] Extract result: {res}")
+    
+    # 6. Clean up temporary files in sandbox
+    await run_sandbox_command(tool_registry, "rm -f /tmp/skills.zip.b64 /tmp/skills.zip /tmp/extract.py")
 
 
 # ── Workspace Persistence & Synchronization ──
@@ -264,6 +367,9 @@ def build_system_prompt(files_dict: dict[str, str]) -> str:
         "You must read, respect, and update these files as needed to maintain state across sessions.\n"
         "You can read, write, or delete files in the `/workspace/` directory using your file tools (e.g., using paths like `/workspace/IDENTITY.md` or `/workspace/USER.md`).\n"
         "If you make changes to these files, they will be loaded into your system prompt in subsequent turns/sessions.\n\n"
+        "=== SKILLS INSTRUCTIONS ===\n"
+        "You have a read-only `/skills/` directory containing operational manuals for complex tasks (e.g., `/skills/onboard/SKILL.md`, `/skills/excel-xlsx/SKILL.md`, `/skills/frontend-design/SKILL.md`, etc.).\n"
+        "You can list files in `/skills/` or read these manuals to understand how to execute specific tasks when required. Do not guess how a skill works; read its SKILL.md file if you need to use it.\n\n"
     )
 
     files_descriptions = {
@@ -366,6 +472,9 @@ async def handler(context: Any) -> AsyncGenerator[str, None]:
     # ── Workspace: Load files and initialize sandbox ──
     files_dict = await load_workspace_files(context)
     await sync_workspace_to_sandbox(tool_registry, files_dict)
+
+    # ── Skills: Sync local skills to sandbox ──
+    await sync_skills_to_sandbox(tool_registry)
 
     # Build messages list: system prompt + history + current user message
     messages: list[dict[str, Any]] = (
