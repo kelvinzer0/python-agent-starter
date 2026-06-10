@@ -29,6 +29,7 @@ import inspect
 import json
 import zipfile
 import io
+import re
 
 import httpx
 
@@ -489,26 +490,262 @@ async def run_subagent_loop(context: Any, role: str, objective: str, tool_regist
                     logger.log(f"[subagent] Sub-agent finished with response length: {len(assistant_content)}")
                     return assistant_content
                     
-                # Execute tool calls
+                # ── Parallel Execution & Dependency Injection (Sub-agent Orchestrator) ──
+                all_tool_call_ids = {tc["id"] for tc in tool_calls}
+                executed_results = {}
+                completed_ids = set()
+                pending_calls = list(tool_calls)
+                
+                final_results_map = {}
+                
+                while pending_calls:
+                    ready_calls = []
+                    for tc in pending_calls:
+                        deps = get_tool_dependencies(tc["function"]["arguments"], all_tool_call_ids)
+                        if deps.issubset(completed_ids):
+                            ready_calls.append(tc)
+                            
+                    if not ready_calls:
+                        logger.log(f"[subagent orchestrator] Cycle detected or unresolved dependencies. Executing remaining {len(pending_calls)} tools.")
+                        ready_calls = list(pending_calls)
+                        
+                    for tc in ready_calls:
+                        pending_calls.remove(tc)
+                        
+                    ready_calls_with_resolved = []
+                    for tc in ready_calls:
+                        unresolved_args = tc["function"]["arguments"]
+                        resolved_args = resolve_placeholders(unresolved_args, executed_results)
+                        ready_calls_with_resolved.append((tc, resolved_args))
+                        
+                    async def run_subagent_tool(tc_item, resolved_args_str):
+                        logger.log(f"[subagent] Sub-agent calling tool: {tc_item['function']['name']}")
+                        tool_result = await tool_registry.execute(tc_item["function"]["name"], resolved_args_str)
+                        return tc_item, tool_result
+                        
+                    wave_tasks = [run_subagent_tool(tc, resolved_args) for tc, resolved_args in ready_calls_with_resolved]
+                    wave_outputs = await asyncio.gather(*wave_tasks)
+                    
+                    for tc_item, tool_result in wave_outputs:
+                        executed_results[tc_item["id"]] = tool_result
+                        completed_ids.add(tc_item["id"])
+                        final_results_map[tc_item["id"]] = tool_result
+                        
                 for tc in tool_calls:
-                    tc_name = tc["function"]["name"]
-                    tc_args = tc["function"]["arguments"]
-                    tc_id = tc["id"]
-                    
-                    logger.log(f"[subagent] Sub-agent calling tool: {tc_name}")
-                    tool_result = await tool_registry.execute(tc_name, tc_args)
-                    
+                    tool_result = final_results_map[tc["id"]]
                     messages.append({
                         "role": "tool",
-                        "tool_call_id": tc_id,
+                        "tool_call_id": tc["id"],
                         "content": tool_result
                     })
+                    
                     
             return messages[-1].get("content") or "Sub-agent execution exceeded maximum rounds."
             
     except Exception as e:
         logger.error(f"[subagent] Failed during execution: {e}")
         return f"Sub-agent execution failed: {str(e)}"
+
+def get_tool_dependencies(arguments_str: str, all_ids: set[str]) -> set[str]:
+    """Scans the arguments string for placeholders matching any tool call ID in the current round."""
+    pattern_curly = r"\{\{([a-zA-Z0-9_-]+)(?:\.([a-zA-Z0-9_-]+)|\[['\"]([^'\"]+)['\"]\])?\}\}"
+    pattern_angle = r"<([a-zA-Z0-9_-]+)(?:\.([a-zA-Z0-9_-]+))?>"
+    
+    deps = set()
+    if not arguments_str:
+        return deps
+        
+    for match in re.finditer(pattern_curly, arguments_str):
+        cid = match.group(1)
+        if cid in all_ids:
+            deps.add(cid)
+            
+    for match in re.finditer(pattern_angle, arguments_str):
+        cid = match.group(1)
+        if cid in all_ids:
+            deps.add(cid)
+            
+    return deps
+
+
+def resolve_placeholders_in_obj(obj: Any, parent_results: dict[str, Any]) -> Any:
+    """Recursively walks a JSON-like structure and resolves placeholders using parent tool results."""
+    pattern_curly = r"\{\{([a-zA-Z0-9_-]+)(?:\.([a-zA-Z0-9_-]+)|\[['\"]([^'\"]+)['\"]\])?\}\}"
+    pattern_angle = r"<([a-zA-Z0-9_-]+)(?:\.([a-zA-Z0-9_-]+))?>"
+
+    def get_resolved_val(tool_id: str, key: str | None) -> Any:
+        if tool_id not in parent_results:
+            return None
+            
+        parent_raw = parent_results[tool_id]
+        
+        # Try parsing parent output as JSON
+        parent_obj = None
+        if isinstance(parent_raw, str):
+            try:
+                parent_obj = json.loads(parent_raw)
+            except json.JSONDecodeError:
+                pass
+        else:
+            parent_obj = parent_raw
+
+        if key:
+            if isinstance(parent_obj, dict) and key in parent_obj:
+                return parent_obj[key]
+            elif isinstance(parent_obj, list) and key.isdigit():
+                idx = int(key)
+                if 0 <= idx < len(parent_obj):
+                    return parent_obj[idx]
+            return None
+            
+        # No key specified, apply heuristic resolution
+        if isinstance(parent_obj, dict):
+            # Check for common key fields
+            for k in ["id", "key", "value", "path", "filepath", "output", "result"]:
+                if k in parent_obj:
+                    return parent_obj[k]
+            if len(parent_obj) == 1:
+                return list(parent_obj.values())[0]
+            return parent_raw
+            
+        if isinstance(parent_raw, str):
+            # Check for workspace path pattern
+            path_match = re.search(r"(/workspace/[a-zA-Z0-9_\.\-/]+)", parent_raw)
+            if path_match:
+                return path_match.group(1)
+                
+            # Check for ID pattern
+            id_match = re.search(r"\b(?:ID|id|Id|key|Key)[:\s]+([a-zA-Z0-9_-]+)", parent_raw)
+            if id_match:
+                return id_match.group(1)
+                
+            return parent_raw.strip()
+            
+        return parent_raw
+
+    def process_string(val_str: str) -> Any:
+        # Check if the string is EXACTLY a single curly placeholder
+        m_curly_exact = re.match(r"^" + pattern_curly + r"$", val_str)
+        if m_curly_exact:
+            tool_id = m_curly_exact.group(1)
+            key = m_curly_exact.group(2) or (m_curly_exact.group(3) if len(m_curly_exact.groups()) > 2 else None)
+            resolved = get_resolved_val(tool_id, key)
+            if resolved is not None:
+                return resolved
+                
+        # Check if the string is EXACTLY a single angle placeholder
+        m_angle_exact = re.match(r"^" + pattern_angle + r"$", val_str)
+        if m_angle_exact:
+            tool_id = m_angle_exact.group(1)
+            key = m_angle_exact.group(2)
+            resolved = get_resolved_val(tool_id, key)
+            if resolved is not None:
+                return resolved
+
+        # Otherwise, do string substitution for all matches
+        def sub_curly(match):
+            tool_id = match.group(1)
+            key = match.group(2) or (match.group(3) if len(match.groups()) > 2 else None)
+            resolved = get_resolved_val(tool_id, key)
+            if resolved is not None:
+                if isinstance(resolved, (dict, list)):
+                    return json.dumps(resolved)
+                return str(resolved)
+            return match.group(0)
+
+        def sub_angle(match):
+            tool_id = match.group(1)
+            key = match.group(2)
+            resolved = get_resolved_val(tool_id, key)
+            if resolved is not None:
+                if isinstance(resolved, (dict, list)):
+                    return json.dumps(resolved)
+                return str(resolved)
+            return match.group(0)
+
+        res_str = re.sub(pattern_curly, sub_curly, val_str)
+        res_str = re.sub(pattern_angle, sub_angle, res_str)
+        return res_str
+
+    if isinstance(obj, str):
+        return process_string(obj)
+    elif isinstance(obj, dict):
+        return {k: resolve_placeholders_in_obj(v, parent_results) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [resolve_placeholders_in_obj(item, parent_results) for item in obj]
+    else:
+        return obj
+
+
+def resolve_placeholders(arguments_str: str, parent_results: dict[str, Any]) -> str:
+    """Resolves placeholders inside the arguments JSON string or plain string."""
+    if not arguments_str:
+        return arguments_str
+    try:
+        obj = json.loads(arguments_str)
+        resolved_obj = resolve_placeholders_in_obj(obj, parent_results)
+        return json.dumps(resolved_obj)
+    except Exception:
+        # Fallback to simple string replacement
+        pattern_curly = r"\{\{([a-zA-Z0-9_-]+)(?:\.([a-zA-Z0-9_-]+)|\[['\"]([^'\"]+)['\"]\])?\}\}"
+        pattern_angle = r"<([a-zA-Z0-9_-]+)(?:\.([a-zA-Z0-9_-]+))?>"
+        
+        def get_resolved_val(tool_id: str, key: str | None) -> Any:
+            if tool_id not in parent_results:
+                return None
+            parent_raw = parent_results[tool_id]
+            parent_obj = None
+            if isinstance(parent_raw, str):
+                try:
+                    parent_obj = json.loads(parent_raw)
+                except json.JSONDecodeError:
+                    pass
+            else:
+                parent_obj = parent_raw
+            if key:
+                if isinstance(parent_obj, dict) and key in parent_obj:
+                    return parent_obj[key]
+                return None
+            if isinstance(parent_obj, dict):
+                for k in ["id", "key", "value", "path", "filepath", "output", "result"]:
+                    if k in parent_obj:
+                        return parent_obj[k]
+                if len(parent_obj) == 1:
+                    return list(parent_obj.values())[0]
+                return parent_raw
+            if isinstance(parent_raw, str):
+                path_match = re.search(r"(/workspace/[a-zA-Z0-9_\.\-/]+)", parent_raw)
+                if path_match:
+                    return path_match.group(1)
+                id_match = re.search(r"\b(?:ID|id|Id|key|Key)[:\s]+([a-zA-Z0-9_-]+)", parent_raw)
+                if id_match:
+                    return id_match.group(1)
+                return parent_raw.strip()
+            return parent_raw
+
+        def sub_curly(match):
+            tool_id = match.group(1)
+            key = match.group(2) or (match.group(3) if len(match.groups()) > 2 else None)
+            resolved = get_resolved_val(tool_id, key)
+            if resolved is not None:
+                if isinstance(resolved, (dict, list)):
+                    return json.dumps(resolved)
+                return str(resolved)
+            return match.group(0)
+
+        def sub_angle(match):
+            tool_id = match.group(1)
+            key = match.group(2)
+            resolved = get_resolved_val(tool_id, key)
+            if resolved is not None:
+                if isinstance(resolved, (dict, list)):
+                    return json.dumps(resolved)
+                return str(resolved)
+            return match.group(0)
+
+        res_str = re.sub(pattern_curly, sub_curly, arguments_str)
+        res_str = re.sub(pattern_angle, sub_angle, res_str)
+        return res_str
 
 
 # Maximum number of tool call rounds to prevent infinite loops
@@ -721,49 +958,84 @@ async def handler(context: Any) -> AsyncGenerator[str, None]:
                 ]
                 messages.append(assistant_msg)
 
-                # Emit tool_called events and tool_debug call phase
-                for tc in tool_calls:
-                    yield sse_event("tool_called", {"tool": tc["name"]})
-                    yield sse_event("tool_debug", {
-                        "phase": "call",
-                        "tool": tc["name"],
-                        "id": tc["id"],
-                        "argumentsPreview": safe_json_preview(tc["arguments"], 1200),
-                    })
+                # ── Parallel Execution & Dependency Injection (Universal Tool Orchestrator) ──
+                all_tool_call_ids = {tc["id"] for tc in tool_calls}
+                executed_results = {}  # tool_call_id -> result string
+                completed_ids = set()
+                pending_calls = list(tool_calls)
 
-                # ── Tracer: tool execution spans ──
-                tool_spans = []
-                for tc in tool_calls:
-                    ts = context.tracer.start_span(f"tool.{tc['name']}", {
-                        "tool.name": tc["name"],
-                        "tool.call_id": tc["id"],
-                        "tool.arguments_length": len(tc["arguments"]),
-                    })
-                    tool_spans.append(ts)
+                # Keep ordered maps of outputs to maintain results order
+                final_results_map = {}
+                final_extractions_map = {}
+                final_durations_map = {}
 
-                try:
-                    results = []
-                    for tc_item in tool_calls:
-                        started_at = time.perf_counter()
+                while pending_calls:
+                    # Find tool calls in the wave that are ready (all their dependencies are completed)
+                    ready_calls = []
+                    for tc in pending_calls:
+                        deps = get_tool_dependencies(tc["arguments"], all_tool_call_ids)
+                        if deps.issubset(completed_ids):
+                            ready_calls.append(tc)
 
-                        # Pull the RAW handler value so we can sniff for base64
-                        # images BEFORE serialization. Anything we find is
-                        # replaced with a `[image:<id>]` placeholder; the
-                        # redacted structure is what flows back into the
-                        # model context (next chat-completions round).
-                        raw = await tool_registry.execute_raw(
-                            tc_item["name"], tc_item["arguments"]
-                        )
-                        extraction = extract_images_from_tool_result(raw)
-                        result = _stringify_result(extraction.redacted_result)
-                        duration_ms = int((time.perf_counter() - started_at) * 1000)
-                        results.append(result)
+                    # Fallback for circular dependencies or stuck state
+                    if not ready_calls:
+                        logger.log(f"[orchestrator] Cycle detected or unresolved dependencies. Executing remaining {len(pending_calls)} tools.")
+                        ready_calls = list(pending_calls)
 
-                        # SSE ordering contract: image events fire AFTER
-                        # tool_debug{phase:'call'} (already emitted at line
-                        # ~233 above) and BEFORE tool_debug{phase:'result'}.
-                        # The frontend uses this to attach images to the
-                        # in-flight tool row.
+                    # Remove ready calls from pending list
+                    for tc in ready_calls:
+                        pending_calls.remove(tc)
+
+                    # 1. Resolve arguments and emit call events
+                    ready_calls_with_resolved = []
+                    for tc in ready_calls:
+                        unresolved_args = tc["arguments"]
+                        resolved_args = resolve_placeholders(unresolved_args, executed_results)
+                        ready_calls_with_resolved.append((tc, resolved_args))
+
+                        yield sse_event("tool_called", {"tool": tc["name"]})
+                        yield sse_event("tool_debug", {
+                            "phase": "call",
+                            "tool": tc["name"],
+                            "id": tc["id"],
+                            "argumentsPreview": safe_json_preview(resolved_args, 1200),
+                        })
+
+                    # 2. Run execution of ready calls in parallel
+                    async def run_single_tool(tc_item, resolved_args_str):
+                        ts = context.tracer.start_span(f"tool.{tc_item['name']}", {
+                            "tool.name": tc_item["name"],
+                            "tool.call_id": tc_item["id"],
+                            "tool.arguments_length": len(resolved_args_str),
+                        })
+                        try:
+                            started_at = time.perf_counter()
+                            raw = await tool_registry.execute_raw(
+                                tc_item["name"], resolved_args_str
+                            )
+                            extraction = extract_images_from_tool_result(raw)
+                            result = _stringify_result(extraction.redacted_result)
+                            duration_ms = int((time.perf_counter() - started_at) * 1000)
+
+                            ts.set_attributes({"tool.result_length": len(result)})
+                            return tc_item, result, extraction, duration_ms
+                        finally:
+                            ts.end()
+
+                    # Execute wave in parallel
+                    wave_tasks = [run_single_tool(tc, resolved_args) for tc, resolved_args in ready_calls_with_resolved]
+                    wave_outputs = await asyncio.gather(*wave_tasks)
+
+                    # 3. Process outputs and emit result/image events
+                    for tc_item, result, extraction, duration_ms in wave_outputs:
+                        executed_results[tc_item["id"]] = result
+                        completed_ids.add(tc_item["id"])
+
+                        final_results_map[tc_item["id"]] = result
+                        final_extractions_map[tc_item["id"]] = extraction
+                        final_durations_map[tc_item["id"]] = duration_ms
+
+                        # SSE ordering contract: image events fire AFTER tool_debug{phase:'call'} and BEFORE tool_debug{phase:'result'}.
                         for img in extraction.images:
                             yield sse_event("image", {
                                 "imageId": img.image_id,
@@ -786,13 +1058,10 @@ async def handler(context: Any) -> AsyncGenerator[str, None]:
                         if extraction.truncated:
                             debug_payload["imagesTruncated"] = True
                         yield sse_event("tool_debug", debug_payload)
-                    for ts, result in zip(tool_spans, results):
-                        ts.set_attributes({"tool.result_length": len(result)})
-                finally:
-                    for ts in tool_spans:
-                        ts.end()
 
-                for tc, tool_result in zip(tool_calls, results):
+                # Reconstruct ordered results to append to messages list
+                for tc in tool_calls:
+                    tool_result = final_results_map[tc["id"]]
                     logger.log(f"[tool] {tc['name']}: {tool_result[:200]}")
                     messages.append({
                         "role": "tool",
