@@ -63,7 +63,39 @@
   --sidebar-width: 260px;
   --header-height: 56px;
   --input-max-width: 48rem; /* 768px — same as Open WebUI */
+
+  /* User Message Bubble Colors */
+  --color-user-bg:        var(--color-primary);
+  --color-user-text:      #ffffff;
 }
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-primary:        #f3f4f6;
+    --color-primary-hover:  #e5e7eb;
+    --color-secondary:      #9ca3af;
+    --color-bg:             #0d0d0d;
+    --color-bg-secondary:   #171717;
+    --color-bg-tertiary:    #262626;
+    --color-text:           #f3f4f6;
+    --color-text-secondary: #a3a3a3;
+    --color-text-muted:     #737373;
+    --color-border:         #262626;
+    --color-border-light:   #1c1c1c;
+    --color-accent:         #3b82f6;
+    --color-accent-light:   rgba(59, 130, 246, 0.15);
+    --color-success:        #10b981;
+    --color-error:          #ef4444;
+    --color-error-light:    rgba(239, 68, 68, 0.15);
+    --color-error-border:   rgba(239, 68, 68, 0.3);
+    --color-warning:        #f59e0b;
+    --color-warning-light:  rgba(245, 158, 11, 0.15);
+
+    --color-user-bg:        var(--color-primary);
+    --color-user-text:      var(--color-bg);
+  }
+}
+
 
 html, body, #root {
   height: 100%;

@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { useT } from '../i18n';
+import { X } from '@phosphor-icons/react';
 import styles from './ImageLightbox.module.css';
 
 interface Props {
@@ -73,10 +74,11 @@ export default function ImageLightbox({ url, alt, onClose }: Props) {
             }}
             aria-label={t("aria.closeImagePreview")}
           >
-            ×
+            <X size={20} />
           </button>
         </div>
       )}
     </dialog>
   );
 }
+

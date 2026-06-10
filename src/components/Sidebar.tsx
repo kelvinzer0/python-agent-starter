@@ -1,4 +1,5 @@
 import { useT } from '../i18n';
+import { Sparkle, Plus, ChatTeardropText, Trash } from '@phosphor-icons/react';
 import styles from './Sidebar.module.css';
 
 export interface ChatSessionInfo {
@@ -38,13 +39,13 @@ export default function Sidebar({
       <aside className={`${styles.sidebar} ${isOpen ? styles.open : ''}`}>
         <div className={styles.header}>
           <div className={styles.logo}>
-            <span className={styles.logoIcon}>✦</span>
+            <Sparkle size={18} weight="fill" className={styles.logoIcon} />
             <span className={styles.logoText}>Python Starter</span>
           </div>
         </div>
 
         <button type="button" className={styles.newChatBtn} onClick={onNewChat}>
-          <span className={styles.plusIcon}>+</span>
+          <Plus size={16} className={styles.plusIcon} />
           {t('repl.session.newChat')}
         </button>
 
@@ -62,7 +63,7 @@ export default function Sidebar({
                     onClose(); // Auto close on mobile
                   }}
                 >
-                  <span className={styles.chatIcon}>💬</span>
+                  <ChatTeardropText size={16} className={styles.chatIcon} />
                   <span className={styles.itemTitle} title={s.title}>
                     {s.title || 'Untitled Chat'}
                   </span>
@@ -78,19 +79,7 @@ export default function Sidebar({
                     title="Delete Chat"
                     aria-label="Delete Chat"
                   >
-                    <svg
-                      viewBox="0 0 24 24"
-                      width="14"
-                      height="14"
-                      stroke="currentColor"
-                      strokeWidth="2"
-                      fill="none"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                    >
-                      <polyline points="3 6 5 6 21 6"></polyline>
-                      <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
-                    </svg>
+                    <Trash size={14} />
                   </button>
                 </li>
               ))}
@@ -101,7 +90,7 @@ export default function Sidebar({
         {sessions.length > 0 && (
           <div className={styles.footer}>
             <button type="button" className={styles.clearAllBtn} onClick={onClearAll}>
-              <span className={styles.trashIcon}>🗑</span>
+              <Trash size={16} className={styles.trashIcon} />
               {t('repl.session.clearAll')}
             </button>
           </div>
@@ -110,3 +99,4 @@ export default function Sidebar({
     </>
   );
 }
+

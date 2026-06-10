@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react';
 import type { ReactNode } from 'react';
+import { List, Sparkle, CircleNotch } from '@phosphor-icons/react';
 import { useT } from '../../i18n';
 import { LangToggle } from '../../i18n';
 import { classify } from './keymap';
@@ -88,24 +89,13 @@ export default function ReplShell({
             onClick={onToggleSidebar}
             aria-label="Toggle sidebar"
           >
-            <svg
-              viewBox="0 0 24 24"
-              width="18"
-              height="18"
-              stroke="currentColor"
-              strokeWidth="2.5"
-              fill="none"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            >
-              <line x1="3" y1="12" x2="21" y2="12"></line>
-              <line x1="3" y1="6" x2="21" y2="6"></line>
-              <line x1="3" y1="18" x2="21" y2="18"></line>
-            </svg>
+            <List size={18} />
           </button>
         )}
         <div className={styles.brand}>
-          <span className={styles.brandIcon}>✦</span>
+          <span className={styles.brandIcon}>
+            <Sparkle size={12} weight="fill" />
+          </span>
           Agent
         </div>
         <div className={styles.banner}>
@@ -136,7 +126,7 @@ export default function ReplShell({
         {historyLoading && (
           <div className={styles.historyOverlay}>
             <span>{historyHint ?? t('repl.status.restoringFallback')}</span>
-            <span className={styles.spinner}>▎</span>
+            <CircleNotch size={14} className={styles.spin} />
           </div>
         )}
       </div>
@@ -145,3 +135,4 @@ export default function ReplShell({
     </div>
   );
 }
+

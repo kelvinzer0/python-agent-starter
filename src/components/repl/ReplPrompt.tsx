@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { ChangeEvent, KeyboardEvent } from 'react';
+import { PaperPlaneRight, Stop, Trash, TerminalWindow, Question } from '@phosphor-icons/react';
 import { useT } from '../../i18n';
 import type { ReplAction } from './keymap';
 import HelpPanel from './HelpPanel';
@@ -171,19 +172,7 @@ export default function ReplPrompt({
           title={t('repl.help.send')}
           aria-label={t('repl.help.send')}
         >
-          <svg
-            xmlns="http://www.w3.org/2000/svg"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2.5"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            className={styles.sendIcon}
-          >
-            <line x1="22" y1="2" x2="11" y2="13"></line>
-            <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
-          </svg>
+          <PaperPlaneRight size={14} weight="fill" className={styles.sendIcon} />
         </button>
       </div>
       <div className={styles.toolbar}>
@@ -193,7 +182,7 @@ export default function ReplPrompt({
           onClick={() => handleAction('abort')}
           title={t('repl.action.abort')}
         >
-          <span className={styles.toolBtnIcon}>⨯</span>
+          <Stop size={14} className={styles.toolBtnIcon} />
           <span className={styles.toolBtnLabel}>{t('repl.action.abort')}</span>
         </button>
         <button
@@ -202,7 +191,7 @@ export default function ReplPrompt({
           onClick={() => handleAction('clearScreen')}
           title={t('repl.action.clear')}
         >
-          <span className={styles.toolBtnIcon}>⌫</span>
+          <Trash size={14} className={styles.toolBtnIcon} />
           <span className={styles.toolBtnLabel}>{t('repl.action.clear')}</span>
         </button>
         <button
@@ -211,7 +200,7 @@ export default function ReplPrompt({
           onClick={() => handleAction('toggleVerbose')}
           title={t('repl.action.trace')}
         >
-          <span className={styles.toolBtnIcon}>◈</span>
+          <TerminalWindow size={14} className={styles.toolBtnIcon} />
           <span className={styles.toolBtnLabel}>{t('repl.action.trace')}</span>
         </button>
         <button
@@ -220,7 +209,7 @@ export default function ReplPrompt({
           onClick={() => handleAction('showHelp')}
           title={t('repl.action.help')}
         >
-          <span className={styles.toolBtnIcon}>?</span>
+          <Question size={14} className={styles.toolBtnIcon} />
           <span className={styles.toolBtnLabel}>{t('repl.action.help')}</span>
         </button>
       </div>

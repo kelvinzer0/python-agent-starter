@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { Sparkle, CheckCircle, XCircle, CircleNotch, CaretRight, Image, X } from '@phosphor-icons/react';
 import type { ReplLine } from '../../types';
 import type { RawSseEvent } from '../../api';
 import { useT } from '../../i18n';
@@ -47,12 +48,16 @@ function ToolCallRow({ line }: { line: Extract<ReplLine, { kind: 'tool' }> }) {
   const { t } = useT();
   const [expanded, setExpanded] = useState(false);
   const status = line.status ?? 'running';
-  const statusIcon = status === 'success' ? '✓' : status === 'error' ? '✗' : '◎';
-  const statusCls = status === 'success'
-    ? styles['toolStatus--success']
-    : status === 'error'
-      ? styles['toolStatus--error']
-      : styles['toolStatus--running'];
+
+  let statusIcon;
+  if (status === 'success') {
+    statusIcon = <CheckCircle size={16} weight="fill" className={styles['toolStatus--success']} />;
+  } else if (status === 'error') {
+    statusIcon = <XCircle size={16} weight="fill" className={styles['toolStatus--error']} />;
+  } else {
+    statusIcon = <CircleNotch size={16} className={`${styles['toolStatus--running']} ${styles.spin}`} />;
+  }
+
   return (
     <div className={`${styles.line} ${styles.tool} ${styles.toolPanel}`}>
       <div
@@ -62,13 +67,13 @@ function ToolCallRow({ line }: { line: Extract<ReplLine, { kind: 'tool' }> }) {
         tabIndex={0}
         onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') setExpanded(prev => !prev); }}
       >
-        <span className={`${styles.toolStatus} ${statusCls}`}>{statusIcon}</span>
+        <span className={styles.toolStatus}>{statusIcon}</span>
         <span className={styles.toolName}>{line.tool}</span>
         {line.argsPreview && !expanded && <span className={styles.toolArgs}>{line.argsPreview}</span>}
         {typeof line.durationMs === 'number' && (
           <span className={styles.toolMeta}>· {line.durationMs}ms</span>
         )}
-        <span className={`${styles.chevron} ${expanded ? styles.chevronOpen : ''}`}>▸</span>
+        <CaretRight size={12} weight="bold" className={`${styles.chevron} ${expanded ? styles.chevronOpen : ''}`} />
       </div>
       {expanded && (
         <div className={styles.toolBody}>
@@ -95,7 +100,9 @@ export default function ReplLineRow({ line, onOpenImage, isFirstInTurn }: Props)
 
   const header = isFirstInTurn ? (
     <div className={styles.agentHeader}>
-      <div className={styles.agentAvatar}>✦</div>
+      <div className={styles.agentAvatar}>
+        <Sparkle size={12} weight="fill" />
+      </div>
       <span className={styles.agentName}>Agent</span>
     </div>
   ) : null;
@@ -150,7 +157,9 @@ export default function ReplLineRow({ line, onOpenImage, isFirstInTurn }: Props)
           {header}
           <div className={`${styles.line} ${styles.image}`}>
             <span className={styles.imageTs}>[{formatTime(line.ts)}]</span>
-            <span className={styles.imageGlyph} aria-hidden>📷</span>
+            <span className={styles.imageGlyph} aria-hidden>
+              <Image size={18} />
+            </span>
             {toolName && <span className={styles.imageTool}>{toolName}</span>}
             <button
               type="button"
@@ -191,7 +200,9 @@ export default function ReplLineRow({ line, onOpenImage, isFirstInTurn }: Props)
         <>
           {header}
           <div className={`${styles.line} ${styles.error}`}>
-            <span className={styles.errorPrefix}>agent ✘</span>
+            <span className={styles.errorPrefix}>
+              agent <X size={12} weight="bold" style={{ display: 'inline-block', verticalAlign: 'middle' }} />
+            </span>
             {line.message}
           </div>
         </>
@@ -232,3 +243,4 @@ export function ReplRawRow({ ev }: RawProps) {
     </div>
   );
 }
+

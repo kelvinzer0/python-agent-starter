@@ -21,10 +21,10 @@
 
 /* ── Chat message: user ─────────────────────────────────────── */
 .user {
-  color: #ffffff;
+  color: var(--color-user-text);
   font-weight: 400;
   padding: var(--space-3) var(--space-4);
-  background: var(--color-primary);
+  background: var(--color-user-bg);
   border-radius: 20px 20px 4px 20px; /* Modern message bubble style */
   display: inline-block;
   max-width: 85%;
@@ -513,3 +513,14 @@
     opacity: 1;
   }
 }
+
+.spin {
+  animation: spin 1s linear infinite;
+  display: inline-block;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+

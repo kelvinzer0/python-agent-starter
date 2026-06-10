@@ -1,3 +1,4 @@
+import { Sparkle, ArrowUpRight } from '@phosphor-icons/react';
 import type { ReplLine } from '../../types';
 import type { RawSseEvent } from '../../api';
 import { useT } from '../../i18n';
@@ -44,7 +45,9 @@ export default function ReplStream({
   if (lines.length === 0) {
     return (
       <div className={styles.emptyState}>
-        <div className={styles.emptyIcon}>✦</div>
+        <div className={styles.emptyIcon}>
+          <Sparkle size={48} weight="fill" />
+        </div>
         <h1 className={styles.emptyTitle}>{t('empty.title')}</h1>
         <p className={styles.emptyHint}>{t('empty.hint')}</p>
         <div className={styles.emptyFeatures}>
@@ -64,7 +67,7 @@ export default function ReplStream({
               onClick={() => onPresetClick?.(t(`preset.${num}` as any))}
             >
               <span className={styles.presetText}>{t(`preset.${num}` as any)}</span>
-              <span className={styles.presetArrow}>➔</span>
+              <ArrowUpRight size={14} className={styles.presetArrow} />
             </button>
           ))}
         </div>
@@ -96,3 +99,4 @@ export default function ReplStream({
     </div>
   );
 }
+
