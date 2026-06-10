@@ -389,6 +389,12 @@ def build_system_prompt(files_dict: dict[str, str]) -> str:
         "You have a read-only `/skills/` directory containing operational manuals for complex tasks.\n"
         f"Available skills you can load: {skills_str}.\n"
         "You can read any skill manual using files_read (e.g., `/skills/taste-skill/SKILL.md` or `/skills/excel-xlsx/SKILL.md`) to learn how to perform specific tasks. Do not guess how a skill works; read its SKILL.md file if you need to use it.\n\n"
+        "=== SUB-AGENT DELEGATION ===\n"
+        "You are the coordinator for this session. You have access to a `sessions_spawn` tool to delegate tasks.\n"
+        "- Reply directly for trivial conversations, questions, or short answers.\n"
+        "- Anything requiring multi-step tool calls, deep workspace file searches, coding, code reviews, debugging, or complex computations should be delegated to a specialized sub-agent using `sessions_spawn`.\n"
+        "- Before spawning, define a clear objective and role for the sub-agent.\n"
+        "- Treat the output of sub-agents as detailed evidence to synthesize your final response for the user.\n\n"
     )
 
     files_descriptions = {
@@ -422,7 +428,87 @@ def build_system_prompt(files_dict: dict[str, str]) -> str:
             "Once onboarding/bootstrap is fully finished, you MUST use your file tools to DELETE `/workspace/BOOTSTRAP.md` so that the setup is complete.\n\n"
         )
 
-    return base_prompt + workspace_content
+async def run_subagent_loop(context: Any, role: str, objective: str, tool_registry: ToolRegistry) -> str:
+    """Spawns a specialized sub-agent to perform an objective in a nested tool-calling loop."""
+    logger.log(f"[subagent] Spawning sub-agent '{role}' for objective: '{objective}'")
+    
+    subagent_system_prompt = (
+        f"You are a specialized sub-agent running in a sandboxed workspace.\n"
+        f"Your role is: {role}.\n"
+        f"Your objective is: {objective}.\n"
+        f"You must perform your task, use tools if necessary, and provide a clear, concise summary of your findings as your final answer.\n\n"
+        "Tool-use rules:\n"
+        "1. Use tools only when necessary.\n"
+        "2. Call tools one at a time.\n"
+        "3. Complete the task and answer directly once done.\n"
+    )
+    
+    messages = [
+        {"role": "system", "content": subagent_system_prompt},
+        {"role": "user", "content": f"Please complete your objective: {objective}"}
+    ]
+    
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {MODEL_CONFIG['api_key']}",
+    }
+    base_url = MODEL_CONFIG["base_url"].rstrip("/")
+    url = f"{base_url}/chat/completions"
+    model = MODEL_CONFIG["model"]
+    
+    MAX_SUBAGENT_ROUNDS = 5
+    
+    try:
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(300.0, connect=10.0),
+            verify=ssl_verify,
+            proxy=None,
+        ) as client:
+            for round_idx in range(MAX_SUBAGENT_ROUNDS):
+                payload = {
+                    "model": model,
+                    "messages": messages,
+                }
+                if tool_registry.has_tools():
+                    payload["tools"] = tool_registry.tools
+                    payload["tool_choice"] = "auto"
+                    
+                response = await client.post(url, headers=headers, json=payload)
+                response.raise_for_status()
+                res_data = response.json()
+                
+                choice = res_data["choices"][0]
+                message_out = choice["message"]
+                assistant_content = message_out.get("content") or ""
+                tool_calls = message_out.get("tool_calls")
+                
+                # Append response
+                messages.append(message_out)
+                
+                if not tool_calls:
+                    logger.log(f"[subagent] Sub-agent finished with response length: {len(assistant_content)}")
+                    return assistant_content
+                    
+                # Execute tool calls
+                for tc in tool_calls:
+                    tc_name = tc["function"]["name"]
+                    tc_args = tc["function"]["arguments"]
+                    tc_id = tc["id"]
+                    
+                    logger.log(f"[subagent] Sub-agent calling tool: {tc_name}")
+                    tool_result = await tool_registry.execute(tc_name, tc_args)
+                    
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc_id,
+                        "content": tool_result
+                    })
+                    
+            return messages[-1].get("content") or "Sub-agent execution exceeded maximum rounds."
+            
+    except Exception as e:
+        logger.error(f"[subagent] Failed during execution: {e}")
+        return f"Sub-agent execution failed: {str(e)}"
 
 
 # Maximum number of tool call rounds to prevent infinite loops
@@ -481,6 +567,38 @@ async def handler(context: Any) -> AsyncGenerator[str, None]:
     tools_span = context.tracer.start_span("tools.build")
     try:
         tool_registry = build_tools(context, logger)
+        
+        # Register custom sessions_spawn subagent tool
+        async def sessions_spawn(objective: str, role: str) -> str:
+            return await run_subagent_loop(context, role, objective, tool_registry)
+            
+        spawn_schema = {
+            "type": "function",
+            "function": {
+                "name": "sessions_spawn",
+                "description": (
+                    "Spawn a specialized sub-agent to perform a specific, isolated task "
+                    "(e.g. coding, file analysis, web research, debugging, multi-step computations) "
+                    "and return its output. This keeps the main agent clean and responsive."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "objective": {
+                            "type": "string",
+                            "description": "The exact goal and instructions for the sub-agent. Be specific about inputs, outputs, and requirements."
+                        },
+                        "role": {
+                            "type": "string",
+                            "description": "The role/persona of the sub-agent (e.g. Coder, Code Reviewer, Researcher, Math Solver, Writer, Auditor)."
+                        }
+                    },
+                    "required": ["objective", "role"]
+                }
+            }
+        }
+        tool_registry.register("sessions_spawn", spawn_schema, sessions_spawn)
+
         tools_span.set_attributes({
             "tools.count": len(tool_registry.tools),
             "tools.has_tools": tool_registry.has_tools(),
