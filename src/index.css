@@ -67,6 +67,10 @@
   /* User Message Bubble Colors */
   --color-user-bg:        var(--color-primary);
   --color-user-text:      #ffffff;
+
+  /* Brand Pill Colors */
+  --color-brand-text:    #ffffff;
+  --color-brand-icon-bg: rgba(255, 255, 255, 0.16);
 }
 
 /* Force dark theme */
@@ -93,6 +97,9 @@ html[data-theme="dark"] {
 
   --color-user-bg:        var(--color-primary);
   --color-user-text:      var(--color-bg);
+
+  --color-brand-text:    var(--color-bg);
+  --color-brand-icon-bg: rgba(0, 0, 0, 0.08);
 }
 
 /* Force light theme override */
@@ -119,6 +126,9 @@ html[data-theme="light"] {
 
   --color-user-bg:        var(--color-primary);
   --color-user-text:      #ffffff;
+
+  --color-brand-text:    #ffffff;
+  --color-brand-icon-bg: rgba(255, 255, 255, 0.16);
 }
 
 /* System dark theme fallback */
@@ -146,6 +156,9 @@ html[data-theme="light"] {
 
     --color-user-bg:        var(--color-primary);
     --color-user-text:      var(--color-bg);
+
+    --color-brand-text:    var(--color-bg);
+    --color-brand-icon-bg: rgba(0, 0, 0, 0.08);
   }
 }
 
