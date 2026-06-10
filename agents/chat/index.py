@@ -24,6 +24,7 @@ context convention:
 from typing import Any, AsyncGenerator
 import asyncio
 import time
+from pathlib import Path
 
 import httpx
 
@@ -37,28 +38,82 @@ from ._images import extract_images_from_tool_result
 
 logger = create_logger("chat")
 
-SYSTEM_PROMPT = (
-    "You are a helpful, professional AI Assistant. You have access to a set of runtime tools to help you answer questions and execute tasks.\n"
-    "Always introduce yourself simply as a helpful AI Assistant, unless specified otherwise.\n"
-    "The runtime exposes a set of platform tools via function calling — their exact\n"
-    "names, descriptions, and parameter schemas are provided alongside this message.\n"
-    "Read each tool's schema before calling it; do not assume names or parameters.\n\n"
-    "Tool families you may see (the runtime may expose multiple fine-grained tools per family,\n"
-    "e.g. `browser_fetch`, `files_read`, `commands_run`, `code_interpreter_python`):\n"
-    "- commands / shell: execute shell commands in the sandbox (e.g. date, ls, uname, curl).\n"
-    "- files / fs: read, write, list, check, remove, or create files and directories.\n"
-    "- code_interpreter / interpreter: run code in an isolated interpreter (python, javascript, bash, ...).\n"
-    "- browser: fetch web pages, take screenshots, click, type, evaluate scripts.\n\n"
-    "Tool-use rules:\n"
-    "1. Use a tool only when it is necessary to answer the user concretely.\n"
-    "2. Call tools one at a time and wait for each result before deciding the next step.\n"
-    "3. Never invent, simulate, or paraphrase tool results. If a tool result is unavailable, say so.\n"
-    "4. If a tool call fails, do not repeat it blindly and do not switch to unrelated operations.\n"
-    "   Briefly explain the failure, adjust the parameters only if the fix is clear, otherwise ask the user for guidance.\n"
-    "5. Do not perform destructive file or shell operations unless the user explicitly asks for them.\n"
-    "6. If the task can be answered without tools, answer directly and keep the response concise.\n"
-    "Only call tools that appear in the function-calling schema provided to you."
-)
+
+def build_system_prompt() -> str:
+    """Builds a dynamic system prompt containing the base instructions and the
+    contents of all active workspace markdown files to shape identity and preferences.
+    """
+    base_prompt = (
+        "You are AI Studio Warung Lakku, a smart and helpful agent running inside a sandboxed workspace.\n"
+        "You have access to a set of runtime tools to help you answer questions and execute tasks.\n"
+        "The runtime exposes platform tools via function calling — their exact\n"
+        "names, descriptions, and parameter schemas are provided alongside this message.\n"
+        "Read each tool's schema before calling it; do not assume names or parameters.\n\n"
+        "Tool families you may see:\n"
+        "- commands / shell: execute shell commands in the sandbox (e.g. date, ls, uname, curl).\n"
+        "- files / fs: read, write, list, check, remove, or create files and directories.\n"
+        "- code_interpreter / interpreter: run code in an isolated interpreter (python, javascript, bash, ...).\n"
+        "- browser: fetch web pages, take screenshots, click, type, evaluate scripts.\n\n"
+        "Tool-use rules:\n"
+        "1. Use a tool only when it is necessary to answer the user concretely.\n"
+        "2. Call tools one at a time and wait for each result before deciding the next step.\n"
+        "3. Never invent, simulate, or paraphrase tool results. If a tool result is unavailable, say so.\n"
+        "4. If a tool call fails, do not repeat it blindly and do not switch to unrelated operations.\n"
+        "   Briefly explain the failure, adjust the parameters only if the fix is clear, otherwise ask the user for guidance.\n"
+        "5. Do not perform destructive file or shell operations unless the user explicitly asks for them.\n"
+        "6. If the task can be answered without tools, answer directly and keep the response concise.\n"
+        "Only call tools that appear in the function-calling schema provided to you.\n\n"
+        "=== WORKSPACE INSTRUCTIONS ===\n"
+        "You have a dedicated workspace directory `workspace/` containing Markdown files that define your personality, user details, and operational rules.\n"
+        "You must read, respect, and update these files as needed to maintain state across sessions.\n"
+        "You can read, write, or delete files in the `workspace/` directory using your file tools (e.g., using paths like `workspace/IDENTITY.md` or `workspace/USER.md`).\n"
+        "If you make changes to these files, they will be loaded into your system prompt in subsequent turns/sessions.\n\n"
+    )
+
+    project_root = Path(__file__).resolve().parent.parent.parent
+    workspace_dir = project_root / "workspace"
+    if not workspace_dir.exists():
+        workspace_dir = Path.cwd() / "workspace"
+
+    workspace_content = ""
+    if workspace_dir.exists() and workspace_dir.is_dir():
+        files_to_load = [
+            ("BOOTSTRAP.md", "BOOTSTRAP / INITIALIZATION SETUP (If this file exists, you are in bootstrap mode. Follow its instructions immediately and delete this file once setup is complete)"),
+            ("IDENTITY.md", "IDENTITY / WHO YOU ARE (Your name, creature, vibe, emoji, avatar)"),
+            ("USER.md", "USER DETAILS / ABOUT THE HUMAN (Name, preferences, timezone, notes)"),
+            ("SOUL.md", "SOUL / PERSONALITY & CORE PRINCIPLES (Your behavioral guidelines and personality)"),
+            ("AGENTS.md", "AGENTS / OPERATIONAL RULES (Your standard operating procedures and workspace instructions)"),
+            ("TOOLS.md", "TOOLS / ENVIRONMENT-SPECIFIC NOTES (Specific credentials, hardware locations, SSH hosts, preferred TTS voice, etc.)"),
+            ("HEARTBEAT.md", "HEARTBEAT / PERIODIC TASKS (Add tasks here to run periodically; if empty, periodic checks are skipped)"),
+        ]
+
+        loaded_files = []
+        for filename, description in files_to_load:
+            filepath = workspace_dir / filename
+            if filepath.exists() and filepath.is_file():
+                try:
+                    content = filepath.read_text(encoding="utf-8").strip()
+                    if content:
+                        loaded_files.append(f"### {filename} ({description}):\n```markdown\n{content}\n```")
+                except Exception:
+                    pass
+
+        if loaded_files:
+            workspace_content = "=== CURRENT WORKSPACE FILES ===\n"
+            workspace_content += "\n\n".join(loaded_files)
+            workspace_content += "\n\n===============================\n"
+
+    bootstrap_exists = (workspace_dir / "BOOTSTRAP.md").exists()
+    if bootstrap_exists:
+        base_prompt += (
+            "IMPORTANT: BOOTSTRAP.md is present in your workspace. You must read it and start the onboarding conversation with the user.\n"
+            "Introduce yourself as AI Studio Warung Lakku, explain that you just came online, and ask the user who they are and what name/details you should set.\n"
+            "Guide them through setting up IDENTITY.md, USER.md, and SOUL.md.\n"
+            "Once onboarding/bootstrap is fully finished, you MUST use your file tools to DELETE `workspace/BOOTSTRAP.md` so that the setup is complete.\n\n"
+        )
+
+    return base_prompt + workspace_content
+
 
 # Maximum number of tool call rounds to prevent infinite loops
 MAX_TOOL_ROUNDS = 10
@@ -125,7 +180,7 @@ async def handler(context: Any) -> AsyncGenerator[str, None]:
 
     # Build messages list: system prompt + history + current user message
     messages: list[dict[str, Any]] = (
-        [{"role": "system", "content": SYSTEM_PROMPT}]
+        [{"role": "system", "content": build_system_prompt()}]
         + history
         + [{"role": "user", "content": message}]
     )
