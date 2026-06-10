@@ -1,5 +1,5 @@
 {
   "installCommand": "npm install",
-  "buildCommand": "python3 infisical-setup.py --no-ssh --no-github --env dev && npm run build",
+  "buildCommand": "npm run build",
   "outputDirectory": "dist"
 }
