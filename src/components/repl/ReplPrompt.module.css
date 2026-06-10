@@ -1,32 +1,38 @@
 .prompt {
   position: relative;
   display: flex;
-  align-items: flex-start;
-  gap: 6px;
-  padding: 10px 18px 14px;
-  border-top: 1px solid var(--term-rule);
-  background: var(--term-bg-alt);
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4) var(--space-4);
+  background: var(--color-bg);
   flex-shrink: 0;
-  font-family: var(--term-font);
-  font-size: var(--term-fs);
-  line-height: var(--term-line-h);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-md);
+  line-height: var(--line-height);
+  /* Center like Open WebUI */
+  width: 100%;
+  max-width: var(--input-max-width);
+  margin: 0 auto;
+}
+
+/* Open WebUI: input is inside a rounded container */
+.inputWrap {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--space-2);
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-xl);
+  padding: var(--space-2) var(--space-3);
+  transition: border-color 150ms ease, box-shadow 150ms ease;
+}
+.inputWrap:focus-within {
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 2px rgba(17, 24, 39, 0.08);
 }
 
 .prefix {
-  color: var(--term-amber);
-  font-weight: 600;
-  text-shadow: 0 0 var(--term-glow-sm) var(--term-shadow);
-  flex-shrink: 0;
-  user-select: none;
-  white-space: pre;
-}
-
-.inputWrap {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  align-items: flex-start;
-  position: relative;
+  display: none; /* Hide — Open WebUI doesn't show prompt prefix */
 }
 
 .input {
@@ -36,71 +42,58 @@
   border: 0;
   outline: 0;
   resize: none;
-  color: var(--term-fg);
-  font-family: inherit;
-  font-size: inherit;
-  line-height: inherit;
-  padding: 0;
-  caret-color: var(--term-amber);
-  text-shadow: 0 0 var(--term-glow-sm) var(--term-shadow);
-  /* Allow up to ~6 lines before scroll */
-  max-height: calc(var(--term-line-h) * var(--term-fs) * 6);
+  color: var(--color-text);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-md);
+  line-height: var(--line-height);
+  padding: var(--space-1) 0;
+  max-height: calc(1.625 * 1rem * 6);
 }
 .input::placeholder {
-  color: var(--term-dim);
-  opacity: 0.7;
+  color: var(--color-text-muted);
 }
 .input:disabled {
-  color: var(--term-dim);
+  color: var(--color-text-muted);
   cursor: not-allowed;
-}
-
-.cursor {
-  display: inline-block;
-  width: 0.55em;
-  height: 1em;
-  margin-left: 1px;
-  background: var(--term-amber);
-  vertical-align: text-bottom;
-  animation: blink 1s steps(1, end) infinite;
-  box-shadow: 0 0 6px rgba(255, 176, 0, 0.4);
-}
-@keyframes blink {
-  0%, 49%   { opacity: 1; }
-  50%, 99%  { opacity: 0; }
-  100%      { opacity: 1; }
 }
 
 .status {
   display: flex;
   align-items: center;
-  gap: 8px;
-  color: var(--term-dim);
-  font-size: 12px;
+  justify-content: center;
+  gap: var(--space-2);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
   flex-shrink: 0;
   user-select: none;
+  padding: var(--space-1) 0;
 }
 .status--running {
-  color: var(--term-amber);
-  text-shadow: 0 0 var(--term-glow-sm) var(--term-shadow);
+  color: var(--color-text-secondary);
 }
 
 .stopBtn {
-  background: transparent;
-  border: 1px solid var(--term-red);
-  color: var(--term-red);
-  font-family: inherit;
-  font-size: 11px;
-  padding: 2px 8px;
-  border-radius: 3px;
+  appearance: none;
+  background: var(--color-bg-tertiary);
+  border: 1px solid var(--color-border);
+  color: var(--color-text-secondary);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-xs);
+  font-weight: 500;
+  padding: var(--space-1) var(--space-3);
+  border-radius: var(--radius-full);
   cursor: pointer;
-  transition: background 120ms ease;
+  transition: all 150ms ease;
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
 }
 .stopBtn:hover {
-  background: rgba(255, 110, 110, 0.12);
+  background: var(--color-error-light);
+  border-color: var(--color-error-border);
+  color: var(--color-error);
 }
 
-/* spinner: rotating ascii braille for a compact terminal feel */
 .spinner {
   display: inline-block;
   width: 1ch;

@@ -5,119 +5,133 @@
 }
 
 :root {
-  /* ── Desktop palette (light background outside the window) ──── */
-  --desk-bg-1:      #eceff3;     /* base */
-  --desk-bg-2:      #d8dde6;     /* gradient end */
-  --desk-shadow:    0 30px 80px -20px rgba(15, 18, 30, 0.35),
-                    0 12px 32px -8px rgba(15, 18, 30, 0.18),
-                    0 0 0 1px rgba(15, 18, 30, 0.08);
-  --desk-radius:    12px;
+  /* ── Open WebUI Style Tokens ────────────────────────────────── */
+  --color-primary:        #171717;
+  --color-primary-hover:  #404040;
+  --color-secondary:      #6b7280;
+  --color-bg:             #ffffff;
+  --color-bg-secondary:   #f9fafb;
+  --color-bg-tertiary:    #f3f4f6;
+  --color-text:           #111827;
+  --color-text-secondary: #6b7280;
+  --color-text-muted:     #9ca3af;
+  --color-border:         #e5e7eb;
+  --color-border-light:   #f3f4f6;
+  --color-accent:         #2563eb;
+  --color-accent-light:   #dbeafe;
+  --color-success:        #059669;
+  --color-error:          #dc2626;
+  --color-error-light:    #fef2f2;
+  --color-error-border:   #fecaca;
+  --color-warning:        #d97706;
+  --color-warning-light:  #fffbeb;
 
-  /* ── Terminal palette ───────────────────────────────────────── */
-  --term-bg:        #0b0b0d;
-  --term-bg-alt:    #111114;
-  --term-fg:        #e8e1cf;     /* main foreground */
-  --term-dim:       #8a8170;     /* timestamps / done lines */
-  --term-amber:     #ffb000;     /* prompt / user echo */
-  --term-amber-2:   #ffd277;     /* tool name highlight */
-  --term-cyan:      #7ec7e2;     /* shell $ glyph */
-  --term-green:     #87d96c;     /* success / done */
-  --term-red:       #ff6e6e;     /* error / ^C */
-  --term-violet:    #c39bff;     /* image / verbose-mode event type */
+  /* Spacing */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
 
-  /* CRT phosphor glow — kept very subtle */
-  --term-shadow:    rgba(255, 176, 0, 0.18);
-  --term-glow-sm:   0.25em;
-  --term-glow-md:   0.45em;
-  --term-rule:      rgba(255, 255, 255, 0.07);
+  /* Radius — Open WebUI uses generous rounding */
+  --radius-sm:  8px;
+  --radius-md:  12px;
+  --radius-lg:  16px;
+  --radius-xl:  24px;
+  --radius-full: 9999px;
 
-  --term-font: 'JetBrains Mono', 'IBM Plex Mono', 'Geist Mono',
-               ui-monospace, SFMono-Regular, Menlo, Consolas,
-               'DM Mono', monospace;
-  --term-line-h: 1.55;
-  --term-fs:     14px;
+  /* Shadows — very subtle, elevated feel */
+  --shadow-xs:  0 1px 2px rgba(0, 0, 0, 0.05);
+  --shadow-sm:  0 1px 3px rgba(0, 0, 0, 0.1), 0 1px 2px rgba(0, 0, 0, 0.06);
+  --shadow-md:  0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -2px rgba(0, 0, 0, 0.1);
+  --shadow-lg:  0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -4px rgba(0, 0, 0, 0.1);
 
-  /* legacy aliases — still referenced by ErrorBoundary inline styles
-     and the language toggle classes. Keep until those are scrubbed. */
-  --bg-base: var(--desk-bg-1);
-  --text-primary: var(--term-fg);
-  --text-muted: var(--term-dim);
-  --accent-gold: var(--term-amber);
-  --accent-gold-glow: var(--term-shadow);
-  --font-mono: var(--term-font);
+  /* Typography — Inter like Open WebUI */
+  --font-sans: 'Inter', ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  --font-size-xs:  0.75rem;
+  --font-size-sm:  0.875rem;
+  --font-size-md:  1rem;
+  --font-size-lg:  1.125rem;
+  --font-size-xl:  1.25rem;
+  --font-size-2xl: 1.5rem;
+  --line-height:   1.625;
+
+  /* Layout */
+  --sidebar-width: 260px;
+  --header-height: 56px;
+  --input-max-width: 48rem; /* 768px — same as Open WebUI */
 }
 
 html, body, #root {
   height: 100%;
   width: 100%;
-  /* Soft desktop wash: cool light grey with a hint of depth */
-  background:
-    radial-gradient(ellipse at 20% 10%, #f6f8fb 0%, transparent 55%),
-    radial-gradient(ellipse at 80% 90%, #cbd2dc 0%, transparent 60%),
-    linear-gradient(135deg, var(--desk-bg-1) 0%, var(--desk-bg-2) 100%);
-  color: var(--term-fg);
-  font-family: var(--term-font);
-  font-size: var(--term-fs);
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-md);
+  line-height: var(--line-height);
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
   overflow: hidden;
 }
 
-/* selection highlight in terminal style */
 ::selection {
-  background: rgba(255, 176, 0, 0.25);
-  color: var(--term-fg);
+  background: var(--color-accent-light);
+  color: var(--color-text);
 }
 
-/* webkit scrollbar — thin amber-tinted */
+/* Scrollbar — minimal, matches Open WebUI */
 ::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb {
-  background: var(--term-rule);
-  border-radius: 3px;
+  background: var(--color-border);
+  border-radius: var(--radius-full);
 }
-::-webkit-scrollbar-thumb:hover { background: var(--term-dim); }
+::-webkit-scrollbar-thumb:hover { background: var(--color-secondary); }
 
-/* ── Language toggle (used inside ReplShell topbar) ─────────── */
+/* ── Language toggle ─────────────────────────────────────────── */
 .lang-toggle {
   display: inline-flex;
   align-items: center;
   gap: 2px;
   padding: 4px 10px;
-  border-radius: 999px;
-  border: 1px solid var(--term-rule);
+  border-radius: var(--radius-full);
+  border: 1px solid var(--color-border);
   background: transparent;
   cursor: pointer;
-  font-family: var(--term-font);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-xs);
   line-height: 1;
-  transition: background 200ms ease, border-color 200ms ease;
+  transition: all 150ms ease;
+  color: var(--color-text-secondary);
 }
 .lang-toggle:hover {
-  background: rgba(255, 255, 255, 0.04);
-  border-color: var(--term-dim);
+  background: var(--color-bg-tertiary);
+  border-color: var(--color-secondary);
+  color: var(--color-text);
 }
-.lang-toggle:active {
-  transform: scale(0.97);
-}
+.lang-toggle:active { transform: scale(0.97); }
 .lang-toggle__label {
   display: inline-block;
-  font-family: var(--term-font);
-  font-size: 11px;
+  font-family: var(--font-sans);
+  font-size: var(--font-size-xs);
   font-weight: 400;
-  color: var(--term-dim);
-  transition: color 200ms ease, font-weight 200ms ease, text-shadow 200ms ease;
+  color: inherit;
+  transition: all 150ms ease;
   text-transform: uppercase;
   letter-spacing: 0.5px;
 }
 .lang-toggle__label--active {
-  font-weight: 700;
-  color: var(--term-amber);
-  text-shadow: 0 0 var(--term-glow-sm) var(--term-shadow);
+  font-weight: 600;
+  color: var(--color-text);
 }
 .lang-toggle__sep {
-  font-family: var(--term-font);
-  font-size: 11px;
-  color: var(--term-dim);
-  opacity: 0.4;
+  font-family: var(--font-sans);
+  font-size: var(--font-size-xs);
+  color: var(--color-border);
   margin: 0 3px;
   user-select: none;
 }

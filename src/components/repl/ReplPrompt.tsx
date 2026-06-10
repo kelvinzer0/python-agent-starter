@@ -112,7 +112,6 @@ export default function ReplPrompt({
 
   return (
     <div className={styles.prompt}>
-      <span className={styles.prefix}>{t('repl.prompt.userLabel')}</span>
       <div className={styles.inputWrap}>
         <textarea
           ref={taRef}
@@ -128,7 +127,6 @@ export default function ReplPrompt({
           autoCorrect="off"
           autoCapitalize="off"
         />
-        {showCursor && <span className={styles.cursor} aria-hidden="true" />}
       </div>
       <div className={`${styles.status} ${loading ? styles['status--running'] : ''}`}>
         {loading ? (
@@ -136,7 +134,7 @@ export default function ReplPrompt({
             <span className={styles.spinner}>{SPINNER_FRAMES[spinnerFrame]}</span>
             <span>{t('repl.status.running')}</span>
             <button type="button" className={styles.stopBtn} onClick={onStop}>
-              ■ stop
+              ■ Stop
             </button>
           </>
         ) : (

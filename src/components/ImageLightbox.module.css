@@ -1,7 +1,6 @@
-/* ImageLightbox — minimal full-screen viewer styled to match the terminal aesthetic. */
+/* ImageLightbox — Open WebUI style clean overlay */
 
 .dialog {
-  /* Reset native chrome */
   border: none;
   padding: 0;
   background: transparent;
@@ -10,12 +9,12 @@
   width: 100vw;
   height: 100vh;
   margin: 0;
-  color: var(--term-fg);
+  color: var(--color-text);
 }
 
 .dialog::backdrop {
-  background: rgba(8, 8, 12, 0.85);
-  backdrop-filter: blur(4px);
+  background: rgba(0, 0, 0, 0.7);
+  backdrop-filter: blur(8px);
 }
 
 .inner {
@@ -25,7 +24,7 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 32px;
+  padding: var(--space-8);
   box-sizing: border-box;
   cursor: zoom-out;
 }
@@ -34,33 +33,36 @@
   max-width: 100%;
   max-height: 100%;
   object-fit: contain;
-  border: 1px solid var(--term-rule);
-  border-radius: 2px;
-  box-shadow: 0 12px 60px rgba(0, 0, 0, 0.6);
-  background: var(--term-bg-alt);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
+  background: var(--color-bg);
   cursor: default;
 }
 
 .close {
   position: absolute;
-  top: 16px;
-  right: 16px;
-  width: 36px;
-  height: 36px;
-  border-radius: 50%;
-  border: 1px solid var(--term-rule);
-  background: var(--term-bg);
-  color: var(--term-fg);
-  font-family: var(--term-font);
-  font-size: 22px;
+  top: var(--space-4);
+  right: var(--space-4);
+  width: 40px;
+  height: 40px;
+  border-radius: var(--radius-full);
+  border: none;
+  background: rgba(0, 0, 0, 0.5);
+  color: #fff;
+  font-family: var(--font-sans);
+  font-size: 20px;
   line-height: 1;
   cursor: pointer;
-  transition: box-shadow 120ms ease, color 120ms ease;
+  transition: all 150ms ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  backdrop-filter: blur(4px);
 }
 
 .close:hover,
 .close:focus-visible {
   outline: none;
-  color: var(--term-amber);
-  box-shadow: 0 0 0 1px var(--term-amber);
+  background: rgba(0, 0, 0, 0.7);
+  transform: scale(1.05);
 }

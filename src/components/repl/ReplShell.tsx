@@ -68,15 +68,14 @@ export default function ReplShell({
   return (
     <div className={styles.shell}>
       <div className={styles.topbar}>
-        <div className={styles.dots} aria-hidden="true">
-          <span className={`${styles.dot} ${styles['dot--red']}`} />
-          <span className={`${styles.dot} ${styles['dot--yellow']}`} />
-          <span className={`${styles.dot} ${styles['dot--green']}`} />
+        <div className={styles.brand}>
+          <span className={styles.brandIcon}>✦</span>
+          Agent
         </div>
         <div className={styles.banner}>
-          <span className={styles.bannerName}>agent-repl</span>
-          <span className={styles.bannerSep}>─</span>
-          <span className={styles.bannerModel}>python-starter@{modelName}</span>
+          <span className={styles.bannerName}>Chat</span>
+          <span className={styles.bannerSep}>·</span>
+          <span className={styles.bannerModel}>{modelName}</span>
         </div>
         <div className={styles.topbarRight}>
           <LangToggle />
