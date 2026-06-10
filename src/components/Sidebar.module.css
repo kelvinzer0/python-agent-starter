@@ -2,12 +2,12 @@
   position: relative;
   width: var(--sidebar-width);
   height: 100%;
-  background: #171717; /* Dark sidebar matching ChatGPT/Claude */
-  color: #ececf1;
+  background: var(--color-bg-secondary);
+  color: var(--color-text);
   display: flex;
   flex-direction: column;
   flex-shrink: 0;
-  border-right: 1px solid rgba(255, 255, 255, 0.08);
+  border-right: 1px solid var(--color-border);
   z-index: 10;
   transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
   font-family: var(--font-sans);
@@ -18,7 +18,7 @@
   height: var(--header-height);
   display: flex;
   align-items: center;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  border-bottom: 1px solid var(--color-border-light);
 }
 
 .logo {
@@ -29,7 +29,7 @@
 
 .logoIcon {
   font-size: 16px;
-  color: #3b82f6;
+  color: var(--color-accent);
 }
 
 .logoText {
@@ -41,8 +41,8 @@
 .newChatBtn {
   appearance: none;
   background: transparent;
-  border: 1px solid rgba(255, 255, 255, 0.2);
-  color: #ffffff;
+  border: 1px solid var(--color-border);
+  color: var(--color-text);
   padding: 10px 16px;
   margin: var(--space-4);
   border-radius: var(--radius-md);
@@ -57,8 +57,8 @@
 }
 
 .newChatBtn:hover {
-  background: rgba(255, 255, 255, 0.08);
-  border-color: rgba(255, 255, 255, 0.4);
+  background: var(--color-bg-tertiary);
+  border-color: var(--color-secondary);
 }
 
 .newChatBtn:active {
@@ -81,7 +81,7 @@
 }
 
 .listContainer::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.1);
+  background: var(--color-border);
   border-radius: var(--radius-full);
 }
 
@@ -102,21 +102,22 @@
   border-radius: var(--radius-md);
   cursor: pointer;
   font-size: var(--font-size-xs);
-  color: rgba(255, 255, 255, 0.75);
+  color: var(--color-text-secondary);
   transition: all 150ms ease;
   user-select: none;
   position: relative;
 }
 
 .item:hover {
-  background: rgba(255, 255, 255, 0.05);
-  color: #ffffff;
+  background: var(--color-bg-tertiary);
+  color: var(--color-text);
 }
 
 .active {
-  background: rgba(255, 255, 255, 0.1) !important;
-  color: #ffffff !important;
-  font-weight: 500;
+  background: var(--color-border-light) !important;
+  color: var(--color-text) !important;
+  font-weight: 550;
+  box-shadow: var(--shadow-xs);
 }
 
 .chatIcon {
@@ -136,7 +137,7 @@
   appearance: none;
   background: transparent;
   border: none;
-  color: rgba(255, 255, 255, 0.4);
+  color: var(--color-text-muted);
   cursor: pointer;
   opacity: 0; /* Hidden by default */
   transition: all 150ms ease;
@@ -156,19 +157,20 @@
 
 .deleteBtn:hover {
   color: var(--color-error);
-  background: rgba(220, 38, 38, 0.15);
+  background: var(--color-error-light);
+  border: 1px solid var(--color-error-border);
 }
 
 .emptyList {
   font-size: var(--font-size-xs);
-  color: rgba(255, 255, 255, 0.35);
+  color: var(--color-text-muted);
   text-align: center;
   padding: var(--space-6) 0;
 }
 
 .footer {
   padding: var(--space-3) var(--space-4);
-  border-top: 1px solid rgba(255, 255, 255, 0.05);
+  border-top: 1px solid var(--color-border-light);
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
@@ -178,7 +180,7 @@
   appearance: none;
   background: transparent;
   border: none;
-  color: rgba(255, 255, 255, 0.5);
+  color: var(--color-text-secondary);
   font-size: var(--font-size-xs);
   padding: var(--space-2);
   border-radius: var(--radius-sm);
@@ -192,8 +194,8 @@
 }
 
 .clearAllBtn:hover {
-  background: rgba(255, 255, 255, 0.05);
-  color: #ffffff;
+  background: var(--color-bg-tertiary);
+  color: var(--color-text);
 }
 
 .trashIcon {
@@ -202,8 +204,8 @@
 
 .themeSwitchContainer {
   display: flex;
-  background: rgba(255, 255, 255, 0.04);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: var(--color-bg-tertiary);
+  border: 1px solid var(--color-border-light);
   border-radius: var(--radius-md);
   padding: 2px;
   gap: 2px;
@@ -215,7 +217,7 @@
   appearance: none;
   background: transparent;
   border: none;
-  color: rgba(255, 255, 255, 0.55);
+  color: var(--color-text-muted);
   padding: 6px 0;
   border-radius: calc(var(--radius-md) - 2px);
   cursor: pointer;
@@ -229,19 +231,18 @@
 }
 
 .themeBtn:hover {
-  color: #ffffff;
+  color: var(--color-text);
 }
 
 .themeBtnActive {
-  background: rgba(255, 255, 255, 0.12);
-  color: #ffffff;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+  background: var(--color-bg);
+  color: var(--color-text);
+  box-shadow: var(--shadow-sm);
 }
 
 .themeLabel {
   font-size: 10px;
 }
-
 
 /* Backdrop for mobile overlays */
 .backdrop {
