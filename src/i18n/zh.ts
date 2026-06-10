@@ -79,6 +79,10 @@ const zh = {
   // ─── Pending caret (between submit and first agent output) ───────────
   "repl.status.thinking": "思考中…",
 
+  // ─── Session Management ──────────────────────────────────────────────
+  "repl.session.newChat": "新建会话",
+  "repl.session.clearAll": "清除会话",
+
   // ─── Aria labels ─────────────────────────────────────────────────────
   "aria.closeImagePreview": "关闭图片预览",
 } as const;

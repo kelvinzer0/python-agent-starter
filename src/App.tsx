@@ -29,10 +29,25 @@ import {
   type StoredImageRecord,
 } from './lib/imageStore';
 import type { ReplAction } from './components/repl/keymap';
+import Sidebar, { type ChatSessionInfo } from './components/Sidebar';
 import styles from './App.module.css';
 
 const CONVERSATION_ID_STORAGE_KEY = 'eo_conversation_id';
+const SESSIONS_STORAGE_KEY = 'eo_chat_sessions';
 const MAX_INPUT_HISTORY = 50;
+
+function getStoredSessions(): ChatSessionInfo[] {
+  try {
+    const data = localStorage.getItem(SESSIONS_STORAGE_KEY);
+    return data ? JSON.parse(data) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveStoredSessions(sessions: ChatSessionInfo[]) {
+  localStorage.setItem(SESSIONS_STORAGE_KEY, JSON.stringify(sessions));
+}
 
 function getExistingConversationId(): string | null {
   return localStorage.getItem(CONVERSATION_ID_STORAGE_KEY);
@@ -153,11 +168,12 @@ function tplFill(s: string, vars: Record<string, string | number>): string {
   return s.replace(/\{(\w+)\}/g, (_, k) => String(vars[k] ?? `{${k}}`));
 }
 
-// Module-level dedup flag — outside React lifecycle, unaffected by StrictMode
-let _historyFetchInFlight = false;
-
 function AppInner() {
   const { t } = useT();
+
+  const [conversationId, setConversationId] = useState<string>(() => cidInit.current.cid);
+  const [sessions, setSessions] = useState<ChatSessionInfo[]>(() => getStoredSessions());
+  const [sidebarOpen, setSidebarOpen] = useState(false);
 
   const [lines, setLines] = useState<ReplLine[]>([]);
   const [traceEvents, setTraceEvents] = useState<RawSseEvent[]>([]);
@@ -203,41 +219,69 @@ function AppInner() {
     setPromptValueRef.current?.(text);
   }, []);
 
-  // Restore conversation history on mount (skip on first visit).
+  // Sync state to ref for stale-closure safety in SSE loops
   useEffect(() => {
-    if (cidInit.current.wasFresh || _historyFetchInFlight) {
-      // Brand-new cid → no server messages, no IDB images. Skip the round-trip.
+    conversationIdRef.current = conversationId;
+  }, [conversationId]);
+
+  // Ensure there is always a session in the list on mount
+  useEffect(() => {
+    const saved = getStoredSessions();
+    if (saved.length === 0) {
+      const activeId = conversationIdRef.current;
+      const initial = [{ id: activeId, title: 'New Chat', timestamp: Date.now() }];
+      saveStoredSessions(initial);
+      setSessions(initial);
+    }
+  }, []);
+
+  // Restore conversation history whenever active conversationId changes.
+  useEffect(() => {
+    const saved = getStoredSessions();
+    const hasHistory = saved.some(s => s.id === conversationId);
+
+    if (!hasHistory) {
+      // Brand-new session → clear chat window, skip network history fetch
+      setLines([]);
+      setTraceEvents([]);
       setHistoryLoading(false);
       return;
     }
-    _historyFetchInFlight = true;
-    const cid = conversationIdRef.current;
-    // Fetch text history (server) and image blobs (IndexedDB) in parallel —
-    // they're independent stores, and the user shouldn't wait on one for the
-    // other. They get merged by timestamp before rendering.
+
+    setHistoryLoading(true);
+    setLines([]);
+    setTraceEvents([]);
+    const cid = conversationId;
+
     Promise.all([
       fetchConversationHistory(cid),
       loadConversationImages(cid).catch(err => {
-        // Treat IDB failures as non-fatal — user gets text without images.
         console.warn('[image-store] failed to load conversation images:', err);
         return [] as StoredImageRecord[];
       }),
     ])
       .then(([history, imageRecords]) => {
-        if (history.length === 0 && imageRecords.length === 0) return;
+        if (conversationIdRef.current !== cid) return;
         const textLines = historyToLines(history);
         const imageLines = imagesToLines(imageRecords);
         const merged = mergeByTs(textLines, imageLines);
-        const marker = makeRestored(history.length);
-        setLines(prev => [...prev, ...merged, marker]);
+        
+        if (merged.length > 0) {
+          const marker = makeRestored(history.length);
+          setLines([...merged, marker]);
+        } else {
+          setLines([]);
+        }
+      })
+      .catch(err => {
+        console.error('Failed to load history:', err);
       })
       .finally(() => {
-        _historyFetchInFlight = false;
-        setHistoryLoading(false);
+        if (conversationIdRef.current === cid) {
+          setHistoryLoading(false);
+        }
       });
-    // We intentionally run only on mount.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [conversationId]);
 
   // Revoke all blob: URLs on unmount. We don't try to revoke URL-by-URL on
   // line removal — clearScreen / resetSession replace the lines array as a
@@ -336,6 +380,33 @@ function AppInner() {
       setInputHistory(prev => {
         const next = [...prev.filter(s => s !== text), text];
         return next.length > MAX_INPUT_HISTORY ? next.slice(-MAX_INPUT_HISTORY) : next;
+      });
+
+      // Update session title & save to sessions list
+      setSessions(prev => {
+        const activeId = conversationIdRef.current;
+        const exists = prev.some(s => s.id === activeId);
+        let next = [...prev];
+        const displayTitle = text.length > 28 ? text.slice(0, 28) + '...' : text;
+        if (!exists) {
+          next.unshift({
+            id: activeId,
+            title: displayTitle,
+            timestamp: Date.now()
+          });
+        } else {
+          next = prev.map(s => {
+            if (s.id === activeId && (s.title === 'New Chat' || s.title === '新建会话')) {
+              return {
+                ...s,
+                title: displayTitle
+              };
+            }
+            return s;
+          });
+        }
+        saveStoredSessions(next);
+        return next;
       });
 
       turnMetaRef.current = startTurn(turnId);
@@ -539,27 +610,93 @@ function AppInner() {
     setLines([]);
   }, []);
 
-  const handleResetSession = useCallback(() => {
+  const handleToggleSidebar = useCallback(() => {
+    setSidebarOpen(prev => !prev);
+  }, []);
+
+  const handleSelectSession = useCallback((id: string) => {
+    setConversationId(id);
+  }, []);
+
+  const handleNewChat = useCallback(() => {
     if (abortCtrlRef.current) {
       abortCtrlRef.current.abort();
       abortCtrlRef.current = null;
     }
     setLoading(false);
-    const oldCid = conversationIdRef.current;
-    localStorage.removeItem(CONVERSATION_ID_STORAGE_KEY);
+    setPendingTurnId(null);
+    turnMetaRef.current = null;
+
     const newId = crypto.randomUUID();
     localStorage.setItem(CONVERSATION_ID_STORAGE_KEY, newId);
-    conversationIdRef.current = newId;
-    turnMetaRef.current = null;
-    setTraceEvents([]);
-    // Wipe any blob URLs first (synchronously) so we never render with a
-    // dangling URL, then drop the IDB records for the abandoned session.
-    revokeAllObjectUrls();
-    void deleteConversationImages(oldCid).catch(err => {
-      console.warn('[image-store] failed to delete old conversation images:', err);
-    });
+    setConversationId(newId);
     setLines([]);
+    setTraceEvents([]);
+
+    setSessions(prev => {
+      const exists = prev.some(s => s.id === newId);
+      if (exists) return prev;
+      const next = [{ id: newId, title: 'New Chat', timestamp: Date.now() }, ...prev];
+      saveStoredSessions(next);
+      return next;
+    });
   }, []);
+
+  const handleDeleteSession = useCallback((id: string) => {
+    setSessions(prev => {
+      const next = prev.filter(s => s.id !== id);
+      saveStoredSessions(next);
+      return next;
+    });
+    
+    // Revoke images for deleted session
+    deleteConversationImages(id).catch(() => {});
+
+    if (id === conversationIdRef.current) {
+      const remaining = getStoredSessions().filter(s => s.id !== id);
+      if (remaining.length > 0) {
+        setConversationId(remaining[0].id);
+      } else {
+        handleNewChat();
+      }
+    }
+  }, [handleNewChat]);
+
+  const handleClearAll = useCallback(() => {
+    if (confirm('Clear all conversation history? This cannot be undone.')) {
+      if (abortCtrlRef.current) {
+        abortCtrlRef.current.abort();
+        abortCtrlRef.current = null;
+      }
+      setLoading(false);
+      setPendingTurnId(null);
+      turnMetaRef.current = null;
+
+      // Revoke URLs to release memory
+      revokeAllObjectUrls();
+
+      // Clear all images from IndexedDB
+      sessions.forEach(s => {
+        deleteConversationImages(s.id).catch(() => {});
+      });
+
+      // Wipe localStorage keys
+      localStorage.removeItem(CONVERSATION_ID_STORAGE_KEY);
+      localStorage.removeItem(SESSIONS_STORAGE_KEY);
+
+      // Set clean states
+      setSessions([]);
+      const newId = crypto.randomUUID();
+      localStorage.setItem(CONVERSATION_ID_STORAGE_KEY, newId);
+      setConversationId(newId);
+      setLines([]);
+      setTraceEvents([]);
+    }
+  }, [sessions, handleNewChat]);
+
+  const handleResetSession = useCallback(() => {
+    handleNewChat();
+  }, [handleNewChat]);
 
   const handleToggleVerbose = useCallback(() => {
     // Compute next value via ref to avoid nesting setLines inside a setVerbose
@@ -613,12 +750,22 @@ function AppInner() {
   }, []);
 
   const historyHint = useMemo(() => {
-    const id = conversationIdRef.current.slice(0, 8);
+    const id = conversationId.slice(0, 8);
     return tplFill(t('repl.status.restoring'), { id, n: 0 });
-  }, [t]);
+  }, [conversationId, t]);
 
   return (
     <div className={styles.app}>
+      <Sidebar
+        sessions={sessions}
+        activeSessionId={conversationId}
+        onSelectSession={handleSelectSession}
+        onDeleteSession={handleDeleteSession}
+        onNewChat={handleNewChat}
+        onClearAll={handleClearAll}
+        isOpen={sidebarOpen}
+        onClose={() => setSidebarOpen(false)}
+      />
       <ReplShell
         modelName={selectedModel || 'Agent'}
         loading={loading}
@@ -631,6 +778,7 @@ function AppInner() {
           setSelectedModel(model);
           selectedModelRef.current = model;
         }}
+        onToggleSidebar={handleToggleSidebar}
         footer={
           <ReplPrompt
             loading={loading}

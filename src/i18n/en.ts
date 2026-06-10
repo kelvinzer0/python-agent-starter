@@ -79,6 +79,10 @@ const en = {
   // ─── Pending caret (between submit and first agent output) ───────────
   "repl.status.thinking": "thinking…",
 
+  // ─── Session Management ──────────────────────────────────────────────
+  "repl.session.newChat": "New Chat",
+  "repl.session.clearAll": "Clear sessions",
+
   // ─── Aria labels ─────────────────────────────────────────────────────
   "aria.closeImagePreview": "Close image preview",
 } as const;
