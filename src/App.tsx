@@ -171,7 +171,13 @@ function tplFill(s: string, vars: Record<string, string | number>): string {
 function AppInner() {
   const { t } = useT();
 
-  const [conversationId, setConversationId] = useState<string>(() => cidInit.current.cid);
+  const [conversationId, setConversationId] = useState<string>(() => {
+    const existing = getExistingConversationId();
+    if (existing) return existing;
+    const id = crypto.randomUUID();
+    localStorage.setItem(CONVERSATION_ID_STORAGE_KEY, id);
+    return id;
+  });
   const [sessions, setSessions] = useState<ChatSessionInfo[]>(() => getStoredSessions());
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
@@ -194,20 +200,8 @@ function AppInner() {
 
   const turnMetaRef = useRef<TurnMeta | null>(null);
   const abortCtrlRef = useRef<AbortController | null>(null);
-  // Capture both the cid AND whether it was generated this mount, BEFORE
-  // any side effect can run. The history-load effect uses `wasFresh` to
-  // skip the network round-trip on first visit (a brand-new cid can't
-  // possibly have server history or stored images).
-  const cidInit = useRef<{ cid: string; wasFresh: boolean }>(
-    ((): { cid: string; wasFresh: boolean } => {
-      const existing = getExistingConversationId();
-      if (existing) return { cid: existing, wasFresh: false };
-      const id = crypto.randomUUID();
-      localStorage.setItem(CONVERSATION_ID_STORAGE_KEY, id);
-      return { cid: id, wasFresh: true };
-    })(),
-  );
-  const conversationIdRef = useRef<string>(cidInit.current.cid);
+  
+  const conversationIdRef = useRef<string>(conversationId);
   const clearInputRef = useRef<() => void>(() => {});
   const setPromptValueRef = useRef<(text: string) => void>(() => {});
   const registerSetPromptValue = useCallback((fn: (text: string) => void) => {
