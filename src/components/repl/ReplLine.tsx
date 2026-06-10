@@ -39,6 +39,7 @@ function formatBytes(bytes: number): string {
 interface Props {
   line: ReplLine;
   onOpenImage?: (url: string, alt: string) => void;
+  isFirstInTurn?: boolean;
 }
 
 /** Collapsible tool call sub-component (needs its own useState for expanded). */
@@ -89,8 +90,15 @@ function ToolCallRow({ line }: { line: Extract<ReplLine, { kind: 'tool' }> }) {
   );
 }
 
-export default function ReplLineRow({ line, onOpenImage }: Props) {
+export default function ReplLineRow({ line, onOpenImage, isFirstInTurn }: Props) {
   const { t } = useT();
+
+  const header = isFirstInTurn ? (
+    <div className={styles.agentHeader}>
+      <div className={styles.agentAvatar}>✦</div>
+      <span className={styles.agentName}>Agent</span>
+    </div>
+  ) : null;
 
   switch (line.kind) {
     case 'motd':
@@ -100,80 +108,93 @@ export default function ReplLineRow({ line, onOpenImage }: Props) {
     case 'user':
       return (
         <div className={`${styles.line} ${styles.user}`}>
-          <span className={styles.userPrompt}>{t('repl.prompt.userLabel')}</span>
           {line.text}
         </div>
       );
 
     case 'text':
       return (
-        <div className={`${styles.line} ${styles.text}`}>
-          {!line.isContinuation && (
-            <span className={styles.agentPrompt}>{t('repl.prompt.agentLabel')}</span>
-          )}
-          {line.text}
-        </div>
+        <>
+          {header}
+          <div className={`${styles.line} ${styles.text}`}>
+            {line.text}
+          </div>
+        </>
       );
 
     case 'markdown':
       return (
-        <div className={`${styles.line} ${styles.text} ${styles.markdown}`}>
-          {!line.isContinuation && (
-            <span className={styles.agentPrompt}>{t('repl.prompt.agentLabel')}</span>
-          )}
-          <span className={styles.markdownInner}>
-            <Markdown remarkPlugins={[remarkGfm]}>{line.text}</Markdown>
-          </span>
-        </div>
+        <>
+          {header}
+          <div className={`${styles.line} ${styles.text} ${styles.markdown}`}>
+            <span className={styles.markdownInner}>
+              <Markdown remarkPlugins={[remarkGfm]}>{line.text}</Markdown>
+            </span>
+          </div>
+        </>
       );
 
     case 'tool':
-      return <ToolCallRow line={line} />;
+      return (
+        <>
+          {header}
+          <ToolCallRow line={line} />
+        </>
+      );
 
     case 'image': {
       const { image, toolName } = line;
       const altText = `${toolName ?? 'tool'} output (${formatBytes(image.size)})`;
       return (
-        <div className={`${styles.line} ${styles.image}`}>
-          <span className={styles.imageTs}>[{formatTime(line.ts)}]</span>
-          <span className={styles.imageGlyph} aria-hidden>📷</span>
-          {toolName && <span className={styles.imageTool}>{toolName}</span>}
-          <button
-            type="button"
-            className={styles.imageBtn}
-            onClick={() => onOpenImage?.(image.url, altText)}
-            aria-label={t('repl.image.open')}
-            title={t('repl.image.open')}
-          >
-            <img
-              src={image.url}
-              alt=""
-              className={styles.imageThumb}
-              loading="lazy"
-              draggable={false}
-            />
-          </button>
-          <span className={styles.imageMeta}>{formatBytes(image.size)}</span>
-        </div>
+        <>
+          {header}
+          <div className={`${styles.line} ${styles.image}`}>
+            <span className={styles.imageTs}>[{formatTime(line.ts)}]</span>
+            <span className={styles.imageGlyph} aria-hidden>📷</span>
+            {toolName && <span className={styles.imageTool}>{toolName}</span>}
+            <button
+              type="button"
+              className={styles.imageBtn}
+              onClick={() => onOpenImage?.(image.url, altText)}
+              aria-label={t('repl.image.open')}
+              title={t('repl.image.open')}
+            >
+              <img
+                src={image.url}
+                alt=""
+                className={styles.imageThumb}
+                loading="lazy"
+                draggable={false}
+              />
+            </button>
+            <span className={styles.imageMeta}>{formatBytes(image.size)}</span>
+          </div>
+        </>
       );
     }
 
     case 'done':
       return (
-        <div className={`${styles.line} ${styles.done}`}>
-          {tplFill(t('repl.done.summary'), {
-            elapsed: (line.elapsedMs / 1000).toFixed(1),
-            rounds: line.toolRounds,
-          })}
-        </div>
+        <>
+          {header}
+          <div className={`${styles.line} ${styles.done}`}>
+            {tplFill(t('repl.done.summary'), {
+              elapsed: (line.elapsedMs / 1000).toFixed(1),
+              rounds: line.toolRounds,
+            })}
+          </div>
+        </>
       );
 
     case 'error':
       return (
-        <div className={`${styles.line} ${styles.error}`}>
-          <span className={styles.errorPrefix}>agent ✘</span>
-          {line.message}
-        </div>
+        <>
+          {header}
+          <div className={`${styles.line} ${styles.error}`}>
+            <span className={styles.errorPrefix}>agent ✘</span>
+            {line.message}
+          </div>
+        </>
       );
 
     case 'restored':

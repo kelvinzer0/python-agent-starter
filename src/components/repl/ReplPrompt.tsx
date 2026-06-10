@@ -10,6 +10,8 @@ interface Props {
   onSubmit: (text: string) => void;
   /** Called by App when Ctrl+C in idle mode requests "clear input". */
   registerClearInput: (clear: () => void) => void;
+  /** Called by App to expose input value setter. */
+  registerSetPromptValue?: (setter: (text: string) => void) => void;
   inputHistory: string[];
   onAction: (action: ReplAction) => void;
 }
@@ -18,6 +20,7 @@ export default function ReplPrompt({
   loading,
   onSubmit,
   registerClearInput,
+  registerSetPromptValue,
   inputHistory,
   onAction,
 }: Props) {
@@ -35,6 +38,18 @@ export default function ReplPrompt({
       setHistoryIdx(null);
     });
   }, [registerClearInput]);
+
+  // Expose a "set prompt value" handle to App.
+  useEffect(() => {
+    registerSetPromptValue?.((text: string) => {
+      setValue(text);
+      if (taRef.current) {
+        taRef.current.focus();
+        taRef.current.style.height = 'auto';
+        taRef.current.style.height = `${taRef.current.scrollHeight}px`;
+      }
+    });
+  }, [registerSetPromptValue]);
 
   // Auto-resize textarea up to max-height (CSS clamps further).
   useLayoutEffect(() => {
@@ -148,6 +163,28 @@ export default function ReplPrompt({
           autoCorrect="off"
           autoCapitalize="off"
         />
+        <button
+          type="button"
+          className={styles.sendBtn}
+          onClick={commit}
+          disabled={loading || !value.trim()}
+          title={t('repl.help.send')}
+          aria-label={t('repl.help.send')}
+        >
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2.5"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className={styles.sendIcon}
+          >
+            <line x1="22" y1="2" x2="11" y2="13"></line>
+            <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+          </svg>
+        </button>
       </div>
       <div className={styles.toolbar}>
         <button

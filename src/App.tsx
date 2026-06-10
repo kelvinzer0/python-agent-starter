@@ -193,7 +193,15 @@ function AppInner() {
   );
   const conversationIdRef = useRef<string>(cidInit.current.cid);
   const clearInputRef = useRef<() => void>(() => {});
+  const setPromptValueRef = useRef<(text: string) => void>(() => {});
+  const registerSetPromptValue = useCallback((fn: (text: string) => void) => {
+    setPromptValueRef.current = fn;
+  }, []);
   const verboseRef = useRef<boolean>(false);
+
+  const handlePresetClick = useCallback((text: string) => {
+    setPromptValueRef.current?.(text);
+  }, []);
 
   // Restore conversation history on mount (skip on first visit).
   useEffect(() => {
@@ -628,6 +636,7 @@ function AppInner() {
             loading={loading}
             onSubmit={handleSend}
             registerClearInput={registerClearInput}
+            registerSetPromptValue={registerSetPromptValue}
             inputHistory={inputHistory}
             onAction={onAction}
           />
@@ -639,6 +648,7 @@ function AppInner() {
           verbose={verbose}
           showPending={pendingTurnId !== null}
           onOpenImage={handleOpenImage}
+          onPresetClick={handlePresetClick}
         />
       </ReplShell>
       <ImageLightbox url={lightboxUrl} alt={lightboxAlt} onClose={handleCloseLightbox} />

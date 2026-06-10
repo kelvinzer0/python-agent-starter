@@ -70,10 +70,10 @@
   color: var(--color-border);
 }
 .bannerModel {
-  color: var(--color-text-muted);
+  color: var(--color-text-secondary);
   font-size: var(--font-size-xs);
   font-family: var(--font-mono);
-  font-weight: 500;
+  font-weight: 600;
   background: var(--color-bg-tertiary);
   padding: 2px 8px;
   border-radius: var(--radius-sm);
@@ -84,10 +84,10 @@
   background: var(--color-bg-tertiary);
   border: 1px solid var(--color-border-light);
   border-radius: var(--radius-sm);
-  color: var(--color-text-muted);
+  color: var(--color-text-secondary);
   font-family: var(--font-mono);
   font-size: var(--font-size-xs);
-  font-weight: 500;
+  font-weight: 600;
   padding: 2px 24px 2px 8px;
   cursor: pointer;
   outline: none;
@@ -154,4 +154,26 @@
   display: inline-block;
   width: 10px;
   text-align: left;
+}
+
+@media (max-width: 480px) {
+  .topbar {
+    padding: 0 var(--space-2);
+    gap: var(--space-2);
+  }
+  .brand {
+    padding: var(--space-1) var(--space-2);
+    font-size: var(--font-size-xs);
+  }
+  .brandIcon {
+    width: 18px;
+    height: 18px;
+    font-size: 9px;
+  }
+  .bannerName {
+    font-size: var(--font-size-sm);
+  }
+  .modelSelect {
+    max-width: 120px;
+  }
 }

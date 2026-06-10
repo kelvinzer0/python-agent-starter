@@ -1,8 +1,8 @@
 .stream {
   display: flex;
   flex-direction: column;
-  gap: 0;
-  padding: var(--space-6) var(--space-4) var(--space-2);
+  gap: var(--space-4); /* Consistent spacing between blocks */
+  padding: var(--space-6) var(--space-4) var(--space-6);
   width: 100%;
   max-width: var(--input-max-width);
   margin: 0 auto;
@@ -19,30 +19,25 @@
   padding: 0;
 }
 
-/* ── motd / welcome — no longer rendered ────────────────────── */
-
 /* ── Chat message: user ─────────────────────────────────────── */
 .user {
-  display: flex;
-  justify-content: flex-end;
-  margin: var(--space-4) 0;
-  padding: 0 var(--space-4);
-}
-.user {
-  color: var(--color-text);
+  color: #ffffff;
   font-weight: 400;
   padding: var(--space-3) var(--space-4);
   background: var(--color-primary);
-  color: #ffffff;
-  border-radius: var(--radius-xl);
+  border-radius: 20px 20px 4px 20px; /* Modern message bubble style */
   display: inline-block;
-  max-width: 80%;
+  max-width: 85%;
   font-size: var(--font-size-md);
   line-height: var(--line-height);
   word-break: break-word;
-  /* Reset the outer flex alignment — the bubble itself is inline */
-  margin: var(--space-4) 0;
-  margin-left: auto;
+  margin: 0;
+  margin-left: auto; /* Push to the right */
+  box-shadow: var(--shadow-xs);
+  transition: transform 150ms ease;
+}
+.user:hover {
+  transform: translateY(-1px);
 }
 .userPrompt {
   display: none;
@@ -50,34 +45,63 @@
 
 /* ── Chat message: assistant ────────────────────────────────── */
 .text {
-  display: flex;
-  gap: var(--space-3);
-  padding: var(--space-4) 0;
-  margin: var(--space-1) 0;
-}
-.text {
   color: var(--color-text);
   font-size: var(--font-size-md);
-  line-height: var(--line-height);
-  padding: 0;
+  line-height: 1.625;
+  padding: 2px 0;
   display: block;
 }
-.agentPrompt {
-  display: none; /* Hide in Open WebUI style — no prefix */
+
+/* ── Agent header (avatar + name) ───────────────────────────── */
+.agentHeader {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: var(--space-5);
+  margin-bottom: var(--space-2);
+  user-select: none;
+  animation: fadeInHeader 0.2s ease-out;
+}
+@keyframes fadeInHeader {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.agentAvatar {
+  width: 26px;
+  height: 26px;
+  border-radius: var(--radius-full);
+  background: var(--color-primary);
+  color: #ffffff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 700;
+  box-shadow: var(--shadow-xs);
+  transition: transform 200ms ease;
+}
+.agentAvatar:hover {
+  transform: rotate(15deg) scale(1.05);
+}
+
+.agentName {
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  color: var(--color-text);
 }
 
 /* ── post-stream Markdown block ──────────────────────────────── */
 .markdown {
   display: block;
   padding: 0;
-  margin: var(--space-1) 0;
+  margin: 0;
 }
 .markdown .markdownInner {
   display: block;
   width: 100%;
   vertical-align: top;
   font-family: var(--font-sans);
-  /* Open WebUI prose styling */
   font-size: var(--font-size-md);
   line-height: var(--line-height);
 }
@@ -129,13 +153,15 @@
 .markdown .markdownInner :global(pre) {
   font-family: var(--font-mono);
   font-size: 0.85em;
-  background: var(--color-primary);
+  background: #181818; /* Premium dark background */
   color: #e5e5e5;
   padding: var(--space-4);
   border-radius: var(--radius-md);
   overflow-x: auto;
   white-space: pre;
   margin: var(--space-3) 0;
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  box-shadow: var(--shadow-sm);
 }
 .markdown .markdownInner :global(pre code) {
   background: none;
@@ -217,31 +243,38 @@
   font-size: var(--font-size-xs);
   font-family: var(--font-mono);
   padding: var(--space-2) var(--space-3);
-  background: var(--color-bg-tertiary);
-  border-radius: var(--radius-sm);
-  margin: var(--space-2) 0;
-  border-left: 2px solid var(--color-accent);
+  background: var(--color-bg-secondary);
+  border-radius: var(--radius-md);
+  margin: 0;
+  border: 1px solid var(--color-border-light);
+  box-shadow: var(--shadow-xs);
+  transition: all 150ms ease;
+}
+.tool:hover {
+  border-color: var(--color-border);
+  box-shadow: var(--shadow-sm);
 }
 .toolPanel {
   flex-direction: column;
   align-items: stretch;
   gap: 0;
   padding: 0;
+  overflow: hidden;
 }
 .toolHeader {
   display: flex;
   align-items: center;
   gap: var(--space-2);
   cursor: pointer;
-  padding: var(--space-2) var(--space-3);
-  border-radius: var(--radius-sm);
-  transition: background 100ms ease;
+  padding: var(--space-3) var(--space-4);
+  transition: background 150ms ease;
+  user-select: none;
 }
 .toolHeader:hover {
-  background: rgba(0, 0, 0, 0.03);
+  background: var(--color-bg-tertiary);
 }
 .toolStatus {
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 700;
   flex-shrink: 0;
   width: 16px;
@@ -270,7 +303,7 @@
   display: none; /* Hide terminal-style prefix */
 }
 .toolName {
-  color: var(--color-text);
+  color: var(--color-accent);
   font-weight: 600;
   font-size: var(--font-size-xs);
   background: var(--color-accent-light);
@@ -301,11 +334,11 @@
   transform: rotate(90deg);
 }
 .toolBody {
-  background: #f8f9fa;
+  background: var(--color-bg-tertiary);
   border-top: 1px solid var(--color-border-light);
-  padding: var(--space-2) var(--space-3);
+  padding: var(--space-3) var(--space-4);
   margin-top: 0;
-  border-radius: 0 0 var(--radius-sm) var(--radius-sm);
+  border-radius: 0 0 var(--radius-md) var(--radius-md);
 }
 .toolSection {
   margin-bottom: var(--space-2);
@@ -332,7 +365,7 @@
   margin: 0;
   white-space: pre-wrap;
   word-break: break-all;
-  max-height: 300px;
+  max-height: 200px;
   overflow-y: auto;
 }
 
@@ -384,8 +417,8 @@
 }
 .imageThumb {
   display: block;
-  max-width: 320px;
-  max-height: 200px;
+  max-width: 100%; /* Fully responsive width */
+  max-height: 220px;
   width: auto;
   height: auto;
   object-fit: contain;
@@ -416,6 +449,7 @@
   border: 1px solid var(--color-error-border);
   font-size: var(--font-size-sm);
   margin: var(--space-2) 0;
+  box-shadow: var(--shadow-xs);
 }
 .errorPrefix {
   color: var(--color-error);
@@ -441,7 +475,7 @@
   opacity: 0.5;
   font-style: italic;
   text-align: center;
-  padding: var(--space-1) 0;
+  padding: var(--space-2) 0;
 }
 
 /* ── verbose / raw event line ────────────────────────────────── */
