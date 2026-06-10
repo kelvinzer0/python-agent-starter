@@ -115,7 +115,7 @@ class handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def do_POST(self):
+    async def do_POST(self):
         start = time.time()
 
         body = _read_body(self.rfile, self.headers)
@@ -144,7 +144,7 @@ class handler(BaseHTTPRequestHandler):
             return
 
         try:
-            history = store.get_messages(
+            history = await store.get_messages(
                 conversation_id=conversation_id, limit=MESSAGE_LIMIT, order="asc"
             ) or []
             messages = [m for item in history if (m := _normalize_message(item))]
