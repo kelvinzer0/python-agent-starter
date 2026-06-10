@@ -1,10 +1,10 @@
 const en = {
   // Header
-  "app.title": "Python Starter",
-  "app.subtitle": "Python Starter -- EdgeOne Makers + Platform Tools",
+  "app.title": "AI Studio Warung Lakku",
+  "app.subtitle": "AI Studio Warung Lakku -- EdgeOne Makers + Platform Tools",
 
   // Empty state
-  "empty.title": "Python Starter",
+  "empty.title": "AI Studio Warung Lakku",
   "empty.hint": "I'm an AI Assistant. I can execute terminal commands, manage files, run Python code, and browse the web inside a secure sandbox environment.",
   "empty.features": "Sandbox Memory · Session Persistence · Platform Tools",
 

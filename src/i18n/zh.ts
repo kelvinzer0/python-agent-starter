@@ -1,10 +1,10 @@
 const zh = {
   // Header
-  "app.title": "Python Starter",
-  "app.subtitle": "Python Starter -- EdgeOne Makers + 平台工具",
+  "app.title": "AI Studio Warung Lakku",
+  "app.subtitle": "AI Studio Warung Lakku -- EdgeOne Makers + 平台工具",
 
   // Empty state
-  "empty.title": "Python Starter",
+  "empty.title": "AI Studio Warung Lakku",
   "empty.hint": "我是您的 AI 助手。我可以在安全的沙箱环境中执行终端命令、管理文件、运行 Python 代码和浏览网页。",
   "empty.features": "沙箱内存 · 会话持久化 · 平台工具",
 
@@ -40,7 +40,7 @@ const zh = {
   "trace.emptyHint": "发送消息后，原始后端 SSE 数据会显示在这里。",
 
   // ─── REPL UI ─────────────────────────────────────────────────────────
-  "repl.motd.title": "Python Starter",
+  "repl.motd.title": "AI Studio Warung Lakku",
   "repl.motd.tools": "可用工具：commands  files  code_interpreter  browser",
   "repl.prompt.label": "user▸ ",
   "repl.prompt.userLabel": "user▸ ",

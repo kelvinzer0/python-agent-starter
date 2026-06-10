@@ -44,7 +44,7 @@ export default function Sidebar({
         <div className={styles.header}>
           <div className={styles.logo}>
             <Sparkle size={18} weight="fill" className={styles.logoIcon} />
-            <span className={styles.logoText}>Python Starter</span>
+            <span className={styles.logoText}>AI Studio Warung Lakku</span>
           </div>
         </div>
 
