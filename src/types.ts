@@ -90,6 +90,10 @@ export type ReplLine =
       argsPreview?: string;
       durationMs?: number;
       resultSummary?: string;
+      status?: 'running' | 'success' | 'error';
+      inputArgs?: string;
+      outputResult?: string;
+      expanded?: boolean;
     }
   | {
       // A separate row per image. We keep this independent (rather than

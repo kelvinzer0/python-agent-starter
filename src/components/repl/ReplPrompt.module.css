@@ -35,6 +35,26 @@
   display: none; /* Hide — Open WebUI doesn't show prompt prefix */
 }
 
+/* Status indicator dot */
+.statusDot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-full);
+  background: #22c55e;
+  flex-shrink: 0;
+  margin-bottom: 6px;
+  transition: background 200ms ease;
+}
+.statusDot[data-running] {
+  background: var(--color-accent);
+  animation: statusPulse 1.2s ease-in-out infinite;
+}
+@keyframes statusPulse {
+  0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(17, 24, 39, 0.3); }
+  50% { opacity: 0.6; box-shadow: 0 0 0 4px rgba(17, 24, 39, 0.08); }
+}
+
 .input {
   flex: 1;
   width: 100%;
@@ -57,45 +77,55 @@
   cursor: not-allowed;
 }
 
-.status {
+/* Action button toolbar */
+.toolbar {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: var(--space-2);
-  color: var(--color-text-muted);
-  font-size: var(--font-size-xs);
-  flex-shrink: 0;
-  user-select: none;
+  gap: var(--space-1);
   padding: var(--space-1) 0;
 }
-.status--running {
-  color: var(--color-text-secondary);
-}
 
-.stopBtn {
+.toolBtn {
   appearance: none;
-  background: var(--color-bg-tertiary);
-  border: 1px solid var(--color-border);
-  color: var(--color-text-secondary);
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--color-text-muted);
   font-family: var(--font-sans);
   font-size: var(--font-size-xs);
-  font-weight: 500;
-  padding: var(--space-1) var(--space-3);
-  border-radius: var(--radius-full);
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
   cursor: pointer;
   transition: all 150ms ease;
   display: flex;
   align-items: center;
-  gap: var(--space-1);
+  gap: 4px;
+  user-select: none;
 }
-.stopBtn:hover {
-  background: var(--color-error-light);
-  border-color: var(--color-error-border);
-  color: var(--color-error);
+.toolBtn:hover {
+  background: var(--color-bg-tertiary);
+  border-color: var(--color-border);
+  color: var(--color-text-secondary);
+}
+.toolBtn:active {
+  background: var(--color-bg-secondary);
+  transform: scale(0.97);
 }
 
-.spinner {
-  display: inline-block;
-  width: 1ch;
+.toolBtnIcon {
+  font-size: 12px;
+  line-height: 1;
+  width: 14px;
   text-align: center;
+}
+
+.toolBtnLabel {
+  font-size: var(--font-size-xs);
+  line-height: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .statusDot[data-running] {
+    animation: none;
+  }
 }

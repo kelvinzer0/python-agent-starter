@@ -42,7 +42,6 @@ const zh = {
   // ─── REPL UI ─────────────────────────────────────────────────────────
   "repl.motd.title": "Python Starter",
   "repl.motd.tools": "可用工具：commands  files  code_interpreter  browser",
-  "repl.motd.help": "输入问题并按回车提交。Ctrl+C 中止 · Ctrl+L 清屏 · Ctrl+T 切换 trace · Ctrl+/ 显示帮助。",
   "repl.prompt.label": "user▸ ",
   "repl.prompt.userLabel": "user▸ ",
   "repl.prompt.agentLabel": "agent▸ ",
@@ -60,8 +59,19 @@ const zh = {
   "repl.status.verboseOn": "[verbose：显示原始 SSE 事件]",
   "repl.status.verboseOff": "[verbose：关闭]",
   "repl.done.summary": "[完成 · {elapsed}s · {rounds} 轮工具调用]",
-  "repl.help.title": "命令与快捷键",
+  "repl.help.title": "快捷键",
   "repl.help.body": "Enter — 提交 · Shift+Enter — 换行 · ↑/↓ — 输入历史 · Ctrl+C — 中止/清空 · Ctrl+L — 清屏 · Ctrl+Shift+K — 重置会话 · Ctrl+T — 切换 trace · Ctrl+/ — 此帮助",
+  "repl.help.send": "发送消息",
+  "repl.help.abort": "中止运行",
+  "repl.help.clear": "清屏",
+  "repl.help.trace": "切换 trace",
+  "repl.help.toggleHelp": "切换帮助",
+  "repl.action.abort": "中止",
+  "repl.action.clear": "清屏",
+  "repl.action.trace": "Trace",
+  "repl.action.help": "帮助",
+  "repl.tool.inputArgs": "输入",
+  "repl.tool.outputResult": "输出",
 
   // ─── Image (tool output) ─────────────────────────────────────────────
   "repl.image.open": "打开图片（Esc 关闭）",

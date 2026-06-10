@@ -15,7 +15,7 @@ load_dotenv()
 MODEL_CONFIG = {
     "api_key": os.getenv("AI_GATEWAY_API_KEY", ""),
     "base_url": os.getenv("AI_GATEWAY_BASE_URL", ""),
-    "model": os.getenv("AI_GATEWAY_MODEL", "@makers/deepseek-v4-flash"),
+    "model": os.getenv("AI_GATEWAY_MODEL", ""),
 }
 
 # Let httpx/Python use the default certificate verification behavior.
