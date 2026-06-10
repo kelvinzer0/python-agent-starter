@@ -69,8 +69,61 @@
   --color-user-text:      #ffffff;
 }
 
+/* Force dark theme */
+html[data-theme="dark"] {
+  --color-primary:        #f3f4f6;
+  --color-primary-hover:  #e5e7eb;
+  --color-secondary:      #9ca3af;
+  --color-bg:             #0d0d0d;
+  --color-bg-secondary:   #171717;
+  --color-bg-tertiary:    #262626;
+  --color-text:           #f3f4f6;
+  --color-text-secondary: #a3a3a3;
+  --color-text-muted:     #737373;
+  --color-border:         #262626;
+  --color-border-light:   #1c1c1c;
+  --color-accent:         #3b82f6;
+  --color-accent-light:   rgba(59, 130, 246, 0.15);
+  --color-success:        #10b981;
+  --color-error:          #ef4444;
+  --color-error-light:    rgba(239, 68, 68, 0.15);
+  --color-error-border:   rgba(239, 68, 68, 0.3);
+  --color-warning:        #f59e0b;
+  --color-warning-light:  rgba(245, 158, 11, 0.15);
+
+  --color-user-bg:        var(--color-primary);
+  --color-user-text:      var(--color-bg);
+}
+
+/* Force light theme override */
+html[data-theme="light"] {
+  --color-primary:        #171717;
+  --color-primary-hover:  #404040;
+  --color-secondary:      #6b7280;
+  --color-bg:             #ffffff;
+  --color-bg-secondary:   #f9fafb;
+  --color-bg-tertiary:    #f3f4f6;
+  --color-text:           #111827;
+  --color-text-secondary: #6b7280;
+  --color-text-muted:     #9ca3af;
+  --color-border:         #e5e7eb;
+  --color-border-light:   #f3f4f6;
+  --color-accent:         #2563eb;
+  --color-accent-light:   #dbeafe;
+  --color-success:        #059669;
+  --color-error:          #dc2626;
+  --color-error-light:    #fef2f2;
+  --color-error-border:   #fecaca;
+  --color-warning:        #d97706;
+  --color-warning-light:  #fffbeb;
+
+  --color-user-bg:        var(--color-primary);
+  --color-user-text:      #ffffff;
+}
+
+/* System dark theme fallback */
 @media (prefers-color-scheme: dark) {
-  :root {
+  html:not([data-theme="light"]) {
     --color-primary:        #f3f4f6;
     --color-primary-hover:  #e5e7eb;
     --color-secondary:      #9ca3af;
@@ -95,6 +148,7 @@
     --color-user-text:      var(--color-bg);
   }
 }
+
 
 
 html, body, #root {
