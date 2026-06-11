@@ -100,8 +100,8 @@ class ToolRegistry:
                             args[ck] = (
                                 "mkdir -p /workspace_run && "
                                 "rsync -av --delete /workspace/ /workspace_run/ && "
-                                f"(cd /workspace_run && {cmd_val}) ; "
-                                "rsync -av --delete /workspace_run/ /workspace/"
+                                f"((cd /workspace_run && {cmd_val}) ; "
+                                "rsync -av --delete /workspace_run/ /workspace/)"
                             )
             elif "interpreter" in name_lower or "code" in name_lower:
                 code_keys = ["code", "source", "script", "content"]
