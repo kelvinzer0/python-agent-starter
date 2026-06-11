@@ -344,30 +344,43 @@ function AppInner() {
 
   const syncFilesFromCloud = useCallback(async (cid: string) => {
     try {
+      // Load IDB first (may have agent-modified files from onToolCalled)
+      const idbFiles = await loadConversationFiles(cid);
+      const idbHasFiles = Object.keys(idbFiles).length > 0;
+
+      // Load cloud files (may be stale templates if KV is broken)
       const cloudFiles = await fetchWorkspaceFiles(cid);
-      if (cloudFiles.length > 0) {
+
+      if (idbHasFiles) {
+        // IDB has files — use IDB as source of truth (agent-modified data)
+        // Only add cloud files that IDB doesn't have (new templates)
+        for (const f of cloudFiles) {
+          if (!idbFiles[f.name]) {
+            const content = await readWorkspaceFile(cid, f.name);
+            if (content) {
+              idbFiles[f.name] = content;
+              await saveFile({ conversationId: cid, filepath: f.name, content });
+            }
+          }
+        }
+        const fileList = Object.entries(idbFiles).map(([name, content]) => ({
+          name,
+          size: content.length,
+        }));
+        setWorkspaceFiles(fileList);
+      } else if (cloudFiles.length > 0) {
+        // IDB empty, cloud has files — sync cloud to IDB
         setWorkspaceFiles(cloudFiles);
-        // Sync to IDB for offline access: read each file content and store
         for (const f of cloudFiles) {
           const content = await readWorkspaceFile(cid, f.name);
           if (content) {
             await saveFile({ conversationId: cid, filepath: f.name, content });
           }
         }
-      } else {
-        // Cloud is empty — fall back to IDB cached files (offline persistence)
-        const idbFiles = await loadConversationFiles(cid);
-        const fileList = Object.entries(idbFiles).map(([name, content]) => ({
-          name,
-          size: content.length,
-        }));
-        if (fileList.length > 0) {
-          setWorkspaceFiles(fileList);
-        }
       }
     } catch (err) {
       console.error('Failed to sync files from cloud:', err);
-      // On error, fall back to IDB cached files
+      // On error, try IDB fallback
       try {
         const idbFiles = await loadConversationFiles(cid);
         const fileList = Object.entries(idbFiles).map(([name, content]) => ({
@@ -714,13 +727,19 @@ function AppInner() {
               setPendingTurnId(null);
               setLines(prev => [...prev, toolLine]);
 
-              // Update files from snapshot in state
+              // Update files from snapshot in state + persist to IDB
               if (filesSnapshot && typeof filesSnapshot === 'object' && Object.keys(filesSnapshot).length > 0) {
                 const snapshotFiles = Object.entries(filesSnapshot).map(([name, content]) => ({
                   name,
                   size: content.length,
                 }));
                 setWorkspaceFiles(snapshotFiles);
+
+                // Persist each file to IDB for offline/reload persistence
+                const cid = conversationIdRef.current;
+                for (const [filepath, content] of Object.entries(filesSnapshot)) {
+                  saveFile({ conversationId: cid, filepath, content }).catch(() => {});
+                }
               }
             },
 
@@ -775,10 +794,12 @@ function AppInner() {
             onFileChanged: payload => {
               if (payload.version > knownVersionRef.current) {
                 knownVersionRef.current = payload.version;
-                syncFilesFromCloud(conversationIdRef.current).then(() => {
-                  // Persist version manifest in IndexedDB for efficient reload detection
-                  saveManifest(conversationIdRef.current, {}, payload.version).catch(() => {});
-                });
+                // Persist version manifest in IndexedDB for efficient reload detection
+                saveManifest(conversationIdRef.current, {}, payload.version).catch(() => {});
+                // NOTE: Do NOT call syncFilesFromCloud here — it fetches from
+                // the backend which may return stale/template data and overwrite
+                // the IDB entries that onToolCalled already persisted.
+                // The sidebar file list is already updated by onToolCalled.
               }
             },
 
