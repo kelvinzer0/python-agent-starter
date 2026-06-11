@@ -30,6 +30,11 @@ interface SidebarProps {
   onOpenFile: (filename: string) => void;
   onDeleteFile: (filename: string) => void;
   onCreateFile: () => void;
+
+  // Mounting props
+  mountedPath?: string;
+  onMountFolder?: () => void;
+  onUnmountFolder?: () => void;
 }
 
 function formatBytes(bytes: number, decimals = 1) {
@@ -57,6 +62,9 @@ export default function Sidebar({
   onOpenFile,
   onDeleteFile,
   onCreateFile,
+  mountedPath = '',
+  onMountFolder,
+  onUnmountFolder,
 }: SidebarProps) {
   const { t } = useT();
   const [historyExpanded, setHistoryExpanded] = useState(true);
@@ -147,6 +155,34 @@ export default function Sidebar({
             <Plus size={14} />
           </button>
         </div>
+
+        {filesExpanded && (
+          <div className={styles.mountPanel}>
+            {mountedPath ? (
+              <div className={styles.mountedInfo}>
+                <span className={styles.mountPath} title={mountedPath}>
+                  📁 {mountedPath.split('/').pop() || 'Mounted Directory'}
+                </span>
+                <button 
+                  type="button" 
+                  className={styles.unmountBtn} 
+                  onClick={onUnmountFolder}
+                  title="Disconnect Local Folder"
+                >
+                  Disconnect
+                </button>
+              </div>
+            ) : (
+              <button 
+                type="button" 
+                className={styles.mountBtn} 
+                onClick={onMountFolder}
+              >
+                📁 Mount Local Folder
+              </button>
+            )}
+          </div>
+        )}
 
         {filesExpanded && (
           <div className={styles.listContainer}>

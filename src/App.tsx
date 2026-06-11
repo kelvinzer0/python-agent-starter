@@ -8,7 +8,8 @@ import {
 } from './api';
 import type { ModelOption } from './api';
 import { 
-  initLocalFs, writeLocalFile, readLocalFile, listLocalFiles, deleteLocalFile 
+  initLocalFs, writeLocalFile, readLocalFile, listLocalFiles, deleteLocalFile,
+  mountLocalFolder, unmountLocalFolder, setWorkspaceRoot, getWorkspaceRoot
 } from './lib/phcode-fs';
 import { I18nProvider, useT } from './i18n';
 import ReplShell from './components/repl/ReplShell';
@@ -258,12 +259,28 @@ function AppInner() {
   const [editingFile, setEditingFile] = useState<{ name: string; content: string; isNew: boolean } | null>(null);
   const [editorLoading, setEditorLoading] = useState(false);
   const [editorSaving, setEditorSaving] = useState(false);
+  const [mountedPath, setMountedPath] = useState<string>(() => localStorage.getItem('mounted_folder_path') || '');
+  const lastSyncedRef = useRef<Map<string, { size: number; mtime: number }>>(new Map());
+
+  useEffect(() => {
+    if (mountedPath) {
+      setWorkspaceRoot(mountedPath);
+    } else {
+      setWorkspaceRoot('/');
+    }
+  }, [mountedPath]);
 
   const refreshLocalFiles = useCallback(async () => {
     try {
       await initLocalFs();
       const localFiles = await listLocalFiles();
       setWorkspaceFiles(localFiles);
+      
+      // Update last synced map so focus scanning can ignore these
+      lastSyncedRef.current.clear();
+      for (const f of localFiles) {
+        lastSyncedRef.current.set(f.name, { size: f.size, mtime: f.mtime });
+      }
     } catch (err) {
       console.error('Failed to load local files:', err);
     }
@@ -279,6 +296,7 @@ function AppInner() {
       for (const localF of localFiles) {
         if (!cloudFileNames.has(localF.name)) {
           await deleteLocalFile(localF.name);
+          lastSyncedRef.current.delete(localF.name);
         }
       }
 
@@ -289,6 +307,12 @@ function AppInner() {
 
       const updatedLocalFiles = await listLocalFiles();
       setWorkspaceFiles(updatedLocalFiles);
+      
+      // Keep local sync cache aligned
+      lastSyncedRef.current.clear();
+      for (const f of updatedLocalFiles) {
+        lastSyncedRef.current.set(f.name, { size: f.size, mtime: f.mtime });
+      }
     } catch (err) {
       console.error('Failed to sync files from cloud:', err);
     }
@@ -298,6 +322,39 @@ function AppInner() {
     if (!cid) return;
     await syncFilesFromCloud(cid);
   }, [syncFilesFromCloud]);
+
+  const handleMountFolder = useCallback(async () => {
+    try {
+      await initLocalFs();
+      const path = await mountLocalFolder();
+      setMountedPath(path);
+      localStorage.setItem('mounted_folder_path', path);
+      setWorkspaceRoot(path);
+      
+      console.log(`[mount] Folder mounted at ${path}. Syncing files to sandbox...`);
+      const localFiles = await listLocalFiles();
+      
+      // Sync local files to cloud store & sandbox
+      for (const f of localFiles) {
+        const content = await readLocalFile(f.name);
+        await writeWorkspaceFile(conversationIdRef.current, f.name, content);
+        await syncFileToSandbox(conversationIdRef.current, f.name, content);
+      }
+      
+      await refreshLocalFiles();
+      alert(`Directory mounted successfully at: ${path}\nBidirectional sync is now active!`);
+    } catch (err) {
+      console.error('Mounting failed:', err);
+      alert('Mounting local folder failed or was cancelled.');
+    }
+  }, [refreshLocalFiles]);
+
+  const handleUnmountFolder = useCallback(() => {
+    unmountLocalFolder();
+    setMountedPath('');
+    localStorage.removeItem('mounted_folder_path');
+    refreshLocalFiles();
+  }, [refreshLocalFiles]);
 
   const [lines, setLines] = useState<ReplLine[]>([]);
   const [traceEvents, setTraceEvents] = useState<RawSseEvent[]>([]);
@@ -457,6 +514,63 @@ function AppInner() {
     return () => clearInterval(interval);
   }, [loading, syncFilesFromCloud]);
 
+  // Listen for window focus to check for local changes when folder is mounted
+  useEffect(() => {
+    const handleFocus = async () => {
+      const root = getWorkspaceRoot();
+      if (root === '/') return; // Only sync when a local folder is mounted
+      
+      console.log('[fs_sync] Window focused. Scanning for local modifications...');
+      try {
+        await initLocalFs();
+        const localFiles = await listLocalFiles();
+        const localFileNames = new Set(localFiles.map(f => f.name));
+        
+        let changed = false;
+        
+        // Find modified or new files
+        for (const localF of localFiles) {
+          const synced = lastSyncedRef.current.get(localF.name);
+          if (!synced || synced.size !== localF.size || synced.mtime !== localF.mtime) {
+            console.log(`[fs_sync] Local change detected in ${localF.name} (size: ${localF.size}, mtime: ${localF.mtime})`);
+            const content = await readLocalFile(localF.name);
+            
+            await writeWorkspaceFile(conversationIdRef.current, localF.name, content);
+            await syncFileToSandbox(conversationIdRef.current, localF.name, content);
+            
+            lastSyncedRef.current.set(localF.name, { size: localF.size, mtime: localF.mtime });
+            changed = true;
+          }
+        }
+        
+        // Find deleted files
+        for (const name of lastSyncedRef.current.keys()) {
+          if (!localFileNames.has(name)) {
+            console.log(`[fs_sync] Local deletion detected for ${name}`);
+            await deleteWorkspaceFile(conversationIdRef.current, name);
+            await syncDeleteToSandbox(conversationIdRef.current, name);
+            
+            lastSyncedRef.current.delete(name);
+            changed = true;
+          }
+        }
+        
+        if (changed) {
+          const updated = await listLocalFiles();
+          setWorkspaceFiles(updated);
+        }
+      } catch (err) {
+        console.warn('[fs_sync] Window focus sync failed:', err);
+      }
+    };
+
+    window.addEventListener('focus', handleFocus);
+    return () => {
+      window.removeEventListener('focus', handleFocus);
+    };
+  }, []);
+
+
   // ─── SSE handlers (turn-scoped) ─────────────────────────────────────
   const finishStream = useCallback(() => {
     setLoading(false);
@@ -572,210 +686,243 @@ function AppInner() {
       setPendingTurnId(turnId);
       setLoading(true);
 
-      const ctrl = sendMessageStream(
-        text,
-        {
-          onTextDelta: delta => {
-            const meta = turnMetaRef.current;
-            if (!meta) return;
-
-            // CRITICAL: do NOT generate ids or mutate refs *inside* the
-            // setLines updater. React 18 StrictMode invokes updaters twice
-            // in dev; any side-effect (UUID generation, ref mutation) makes
-            // the two calls disagree and React keeps only the second return.
-            //
-            // We decide the target line id BEFORE setLines, mutate the ref
-            // at the same time, then run a pure updater.
-            if (meta.currentTextLineId === null) {
-              // Continuation = a text line that comes AFTER a tool call in the
-              // same turn. The very first text line of the turn gets the
-              // agent▸ prefix; later segments don't, to avoid visual noise.
-              const isContinuation = meta.toolRounds > 0;
-              const fresh = makeText(meta.turnId, '', isContinuation);
-              meta.currentTextLineId = fresh.id;
-              meta.hasText = true;
-              setPendingTurnId(null);
-              setLines(prev => [...prev, { ...fresh, text: delta }]);
-            } else {
-              const target = meta.currentTextLineId;
-              meta.hasText = true;
-              setLines(prev =>
-                prev.map(l =>
-                  l.kind === 'text' && l.id === target ? { ...l, text: l.text + delta } : l,
-                ),
-              );
+      (async () => {
+        try {
+          const root = getWorkspaceRoot();
+          if (root !== '/') {
+            await initLocalFs();
+            const localFiles = await listLocalFiles();
+            const localFileNames = new Set(localFiles.map(f => f.name));
+            
+            for (const localF of localFiles) {
+              const synced = lastSyncedRef.current.get(localF.name);
+              if (!synced || synced.size !== localF.size || synced.mtime !== localF.mtime) {
+                console.log(`[handleSend] Syncing local change: ${localF.name}`);
+                const content = await readLocalFile(localF.name);
+                await writeWorkspaceFile(conversationIdRef.current, localF.name, content);
+                lastSyncedRef.current.set(localF.name, { size: localF.size, mtime: localF.mtime });
+              }
             }
-          },
+            
+            for (const name of lastSyncedRef.current.keys()) {
+              if (!localFileNames.has(name)) {
+                console.log(`[handleSend] Syncing local delete: ${name}`);
+                await deleteWorkspaceFile(conversationIdRef.current, name);
+                lastSyncedRef.current.delete(name);
+              }
+            }
+            
+            const updated = await listLocalFiles();
+            setWorkspaceFiles(updated);
+          }
+        } catch (err) {
+          console.warn('[handleSend] Sync before stream failed:', err);
+        }
 
-          onToolCalled: (toolName, filesSnapshot) => {
-            const meta = turnMetaRef.current;
-            if (!meta) return;
-            // Each tool call ends the current text line; the next text_delta
-            // will start a fresh one.
-            meta.currentTextLineId = null;
-            meta.toolRounds += 1;
-            // Build the line OUTSIDE the updater so its id is stable across
-            // StrictMode's double invocation.
-            const toolLine = makeTool(meta.turnId, toolName, { status: 'running' });
-            setPendingTurnId(null);
-            setLines(prev => [...prev, toolLine]);
+        const ctrl = sendMessageStream(
+          text,
+          {
+            onTextDelta: delta => {
+              const meta = turnMetaRef.current;
+              if (!meta) return;
 
-            // Merge files snapshot into local workspace state if provided
-            if (filesSnapshot && typeof filesSnapshot === 'object' && Object.keys(filesSnapshot).length > 0) {
-              (async () => {
-                try {
-                  await initLocalFs();
-                  const localFiles = await listLocalFiles();
-                  const snapshotNames = new Set(Object.keys(filesSnapshot));
-                  // Remove local files that no longer exist in the snapshot
-                  for (const lf of localFiles) {
-                    if (!snapshotNames.has(lf.name)) {
-                      await deleteLocalFile(lf.name);
+              // CRITICAL: do NOT generate ids or mutate refs *inside* the
+              // setLines updater. React 18 StrictMode invokes updaters twice
+              // in dev; any side-effect (UUID generation, ref mutation) makes
+              // the two calls disagree and React keeps only the second return.
+              //
+              // We decide the target line id BEFORE setLines, mutate the ref
+              // at the same time, then run a pure updater.
+              if (meta.currentTextLineId === null) {
+                // Continuation = a text line that comes AFTER a tool call in the
+                // same turn. The very first text line of the turn gets the
+                // agent▸ prefix; later segments don't, to avoid visual noise.
+                const isContinuation = meta.toolRounds > 0;
+                const fresh = makeText(meta.turnId, '', isContinuation);
+                meta.currentTextLineId = fresh.id;
+                meta.hasText = true;
+                setPendingTurnId(null);
+                setLines(prev => [...prev, { ...fresh, text: delta }]);
+              } else {
+                const target = meta.currentTextLineId;
+                meta.hasText = true;
+                setLines(prev =>
+                  prev.map(l =>
+                    l.kind === 'text' && l.id === target ? { ...l, text: l.text + delta } : l,
+                  ),
+                );
+              }
+            },
+
+            onToolCalled: (toolName, filesSnapshot) => {
+              const meta = turnMetaRef.current;
+              if (!meta) return;
+              // Each tool call ends the current text line; the next text_delta
+              // will start a fresh one.
+              meta.currentTextLineId = null;
+              meta.toolRounds += 1;
+              // Build the line OUTSIDE the updater so its id is stable across
+              // StrictMode's double invocation.
+              const toolLine = makeTool(meta.turnId, toolName, { status: 'running' });
+              setPendingTurnId(null);
+              setLines(prev => [...prev, toolLine]);
+
+              // Merge files snapshot into local workspace state if provided
+              if (filesSnapshot && typeof filesSnapshot === 'object' && Object.keys(filesSnapshot).length > 0) {
+                (async () => {
+                  try {
+                    await initLocalFs();
+                    const localFiles = await listLocalFiles();
+                    const snapshotNames = new Set(Object.keys(filesSnapshot));
+                    // Remove local files that no longer exist in the snapshot
+                    for (const lf of localFiles) {
+                      if (!snapshotNames.has(lf.name)) {
+                        await deleteLocalFile(lf.name);
+                      }
+                    }
+                    // Write all snapshot files to local fs
+                    await Promise.all(
+                      Object.entries(filesSnapshot).map(([name, content]) => writeLocalFile(name, content))
+                    );
+                    await refreshLocalFiles();
+                  } catch (err) {
+                    console.warn('[files_snapshot] Failed to merge snapshot into local fs:', err);
+                  }
+                })();
+              }
+            },
+
+            onToolDebug: (payload: ToolDebugPayload) => {
+              if (payload.phase === 'call') {
+                // Merge call-phase data into the most recent matching tool line
+                const toolName = payload.tool;
+                setLines(prev => {
+                  // Find the last tool line matching this tool name
+                  for (let i = prev.length - 1; i >= 0; i--) {
+                    const l = prev[i];
+                    if (l.kind === 'tool' && l.tool === toolName) {
+                      const updated = {
+                        ...l,
+                        argsPreview: payload.argumentsPreview ?? l.argsPreview,
+                        inputArgs: payload.argumentsPreview ?? l.inputArgs,
+                      };
+                      return [...prev.slice(0, i), updated, ...prev.slice(i + 1)];
                     }
                   }
-                  // Write all snapshot files to local fs
-                  await Promise.all(
-                    Object.entries(filesSnapshot).map(([name, content]) => writeLocalFile(name, content))
-                  );
-                  const updated = await listLocalFiles();
-                  setWorkspaceFiles(updated);
-                } catch (err) {
-                  console.warn('[files_snapshot] Failed to merge snapshot into local fs:', err);
-                }
-              })();
-            }
-          },
-
-          onToolDebug: (payload: ToolDebugPayload) => {
-            if (payload.phase === 'call') {
-              // Merge call-phase data into the most recent matching tool line
-              const toolName = payload.tool;
-              setLines(prev => {
-                // Find the last tool line matching this tool name
-                for (let i = prev.length - 1; i >= 0; i--) {
-                  const l = prev[i];
-                  if (l.kind === 'tool' && l.tool === toolName) {
-                    const updated = {
-                      ...l,
-                      argsPreview: payload.argumentsPreview ?? l.argsPreview,
-                      inputArgs: payload.argumentsPreview ?? l.inputArgs,
-                    };
-                    return [...prev.slice(0, i), updated, ...prev.slice(i + 1)];
+                  return prev;
+                });
+              } else if (payload.phase === 'result') {
+                // Merge result-phase data and set status
+                const toolName = payload.tool;
+                const durationMs = payload.durationMs;
+                setLines(prev => {
+                  for (let i = prev.length - 1; i >= 0; i--) {
+                    const l = prev[i];
+                    if (l.kind === 'tool' && l.tool === toolName) {
+                      const updated = {
+                        ...l,
+                        status: 'success' as const,
+                        durationMs: durationMs ?? l.durationMs,
+                        outputResult: payload.resultPreview ?? l.outputResult,
+                        resultSummary: payload.resultPreview
+                          ? (payload.resultPreview.length > 80 ? payload.resultPreview.slice(0, 80) + '…' : payload.resultPreview)
+                          : l.resultSummary,
+                      };
+                      return [...prev.slice(0, i), updated, ...prev.slice(i + 1)];
+                    }
                   }
-                }
-                return prev;
-              });
-            } else if (payload.phase === 'result') {
-              // Merge result-phase data and set status
-              const toolName = payload.tool;
-              const durationMs = payload.durationMs;
-              setLines(prev => {
-                for (let i = prev.length - 1; i >= 0; i--) {
-                  const l = prev[i];
-                  if (l.kind === 'tool' && l.tool === toolName) {
-                    const updated = {
-                      ...l,
-                      status: 'success' as const,
-                      durationMs: durationMs ?? l.durationMs,
-                      outputResult: payload.resultPreview ?? l.outputResult,
-                      resultSummary: payload.resultPreview
-                        ? (payload.resultPreview.length > 80 ? payload.resultPreview.slice(0, 80) + '…' : payload.resultPreview)
-                        : l.resultSummary,
+                  return prev;
+                });
+              }
+            },
+
+            onImage: payload => {
+              handleImage(payload);
+            },
+
+            onFileChanged: payload => {
+              if (payload.version > knownVersionRef.current) {
+                knownVersionRef.current = payload.version;
+                syncFilesFromCloud(conversationIdRef.current);
+              }
+            },
+
+            onRawEvent: ev => {
+              // Coalesce consecutive text_delta events into a single growing entry,
+              // so a multi-paragraph response doesn't flood the trace panel with
+              // hundreds of one-token rows.
+              if (ev.eventType === 'text_delta') {
+                const delta = (ev.data as { delta?: string } | null)?.delta ?? '';
+                setTraceEvents(prev => {
+                  const last = prev[prev.length - 1];
+                  if (last && last.eventType === 'text_delta') {
+                    const prevDelta = (last.data as { delta?: string } | null)?.delta ?? '';
+                    const merged: RawSseEvent = {
+                      ...last,
+                      data: { delta: prevDelta + delta },
+                      raw: last.raw + delta,
+                      timestamp: ev.timestamp,
                     };
-                    return [...prev.slice(0, i), updated, ...prev.slice(i + 1)];
+                    return [...prev.slice(0, -1), merged];
                   }
-                }
-                return prev;
-              });
-            }
-          },
+                  return [...prev, ev];
+                });
+                return;
+              }
+              // Mirror to trace buffer for verbose mode.
+              setTraceEvents(prev => [...prev, ev]);
+            },
 
-          onImage: payload => {
-            handleImage(payload);
-          },
+            onDone: () => {
+              const meta = turnMetaRef.current;
+              if (meta) {
+                const doneLine = makeDone(meta.turnId, meta.startTs, meta.toolRounds);
+                setLines(prev => {
+                  const next = [...collapseTurnTextToMarkdown(prev, meta.turnId), doneLine];
+                  // Cache the completed conversation to localStorage
+                  const cid = conversationIdRef.current;
+                  const msgs = linesToMessages(next);
+                  if (msgs.length > 0) cacheMessages(cid, msgs);
+                  return next;
+                });
+                turnMetaRef.current = null;
+              }
+              finishStream();
+            },
 
-          onFileChanged: payload => {
-            if (payload.version > knownVersionRef.current) {
-              knownVersionRef.current = payload.version;
-              syncFilesFromCloud(conversationIdRef.current);
-            }
-          },
-
-          onRawEvent: ev => {
-            // Coalesce consecutive text_delta events into a single growing entry,
-            // so a multi-paragraph response doesn't flood the trace panel with
-            // hundreds of one-token rows.
-            if (ev.eventType === 'text_delta') {
-              const delta = (ev.data as { delta?: string } | null)?.delta ?? '';
-              setTraceEvents(prev => {
-                const last = prev[prev.length - 1];
-                if (last && last.eventType === 'text_delta') {
-                  const prevDelta = (last.data as { delta?: string } | null)?.delta ?? '';
-                  const merged: RawSseEvent = {
-                    ...last,
-                    data: { delta: prevDelta + delta },
-                    raw: last.raw + delta,
-                    timestamp: ev.timestamp,
-                  };
-                  return [...prev.slice(0, -1), merged];
-                }
-                return [...prev, ev];
-              });
-              return;
-            }
-            // Mirror to trace buffer for verbose mode.
-            setTraceEvents(prev => [...prev, ev]);
-          },
-
-          onDone: () => {
-            const meta = turnMetaRef.current;
-            if (meta) {
-              const doneLine = makeDone(meta.turnId, meta.startTs, meta.toolRounds);
+            onError: err => {
+              const meta = turnMetaRef.current;
+              const errLine = makeError(err.message || t('status.error'), meta?.turnId);
+              const padLine =
+                meta && !meta.hasText ? makeText(meta.turnId, '', true) : null;
               setLines(prev => {
-                const next = [...collapseTurnTextToMarkdown(prev, meta.turnId), doneLine];
-                // Cache the completed conversation to localStorage
+                // Even on error, collapse whatever text the model managed to
+                // emit so the user sees rendered markdown rather than a
+                // dangling streaming run alongside the error line.
+                let collapsed = meta ? collapseTurnTextToMarkdown(prev, meta.turnId) : prev;
+                // Mark any still-running tool lines as error
+                collapsed = collapsed.map(l =>
+                  l.kind === 'tool' && l.status === 'running'
+                    ? { ...l, status: 'error' as const }
+                    : l,
+                );
+                const next = padLine ? [...collapsed, errLine, padLine] : [...collapsed, errLine];
+                // Cache partial conversation even on error
                 const cid = conversationIdRef.current;
                 const msgs = linesToMessages(next);
                 if (msgs.length > 0) cacheMessages(cid, msgs);
                 return next;
               });
-              turnMetaRef.current = null;
-            }
-            finishStream();
+              if (meta) turnMetaRef.current = null;
+              finishStream();
+            },
           },
+          conversationIdRef.current,
+          selectedModelRef.current || undefined,
+        );
 
-          onError: err => {
-            const meta = turnMetaRef.current;
-            const errLine = makeError(err.message || t('status.error'), meta?.turnId);
-            const padLine =
-              meta && !meta.hasText ? makeText(meta.turnId, '', true) : null;
-            setLines(prev => {
-              // Even on error, collapse whatever text the model managed to
-              // emit so the user sees rendered markdown rather than a
-              // dangling streaming run alongside the error line.
-              let collapsed = meta ? collapseTurnTextToMarkdown(prev, meta.turnId) : prev;
-              // Mark any still-running tool lines as error
-              collapsed = collapsed.map(l =>
-                l.kind === 'tool' && l.status === 'running'
-                  ? { ...l, status: 'error' as const }
-                  : l,
-              );
-              const next = padLine ? [...collapsed, errLine, padLine] : [...collapsed, errLine];
-              // Cache partial conversation even on error
-              const cid = conversationIdRef.current;
-              const msgs = linesToMessages(next);
-              if (msgs.length > 0) cacheMessages(cid, msgs);
-              return next;
-            });
-            if (meta) turnMetaRef.current = null;
-            finishStream();
-          },
-        },
-        conversationIdRef.current,
-        selectedModelRef.current || undefined,
-      );
-
-      abortCtrlRef.current = ctrl;
+        abortCtrlRef.current = ctrl;
+      })();
     },
     [loading, t, finishStream, handleImage],
   );
@@ -1063,6 +1210,9 @@ function AppInner() {
         onOpenFile={handleOpenFile}
         onDeleteFile={handleDeleteFile}
         onCreateFile={handleCreateFile}
+        mountedPath={mountedPath}
+        onMountFolder={handleMountFolder}
+        onUnmountFolder={handleUnmountFolder}
       />
       <ReplShell
         modelName={selectedModel || 'Agent'}
