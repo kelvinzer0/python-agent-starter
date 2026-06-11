@@ -267,29 +267,25 @@ def _should_call_with_kwargs(fn: Any) -> bool:
         return False
 
     params = list(sig.parameters.values())
+    if not params:
+        return False
+
     if any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params):
         return True
 
-    required = [
-        p.name
-        for p in params
-        if p.default is inspect.Parameter.empty
-        and p.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
-    ]
-    if required and len(required) > 1:
+    # If there is only one parameter:
+    if len(params) == 1:
+        p = params[0]
+        # If the parameter is named 'args', 'payload', 'payloads', 'data', 'arguments', or 'kwargs',
+        # we treat it as receiving the raw dictionary.
+        if p.name in ("args", "payload", "payloads", "data", "arguments", "kwargs"):
+            return False
+        # If the parameter name is something specific (e.g. 'filename', 'path', 'content'),
+        # we treat it as keyword arguments.
         return True
 
-    try:
-        sig.bind({})
-        return False
-    except TypeError:
-        pass
-
-    try:
-        sig.bind(**{})
-        return True
-    except TypeError:
-        return False
+    # If there are multiple parameters, always use kwargs
+    return True
 
 
 def _stringify_result(result: Any) -> str:
