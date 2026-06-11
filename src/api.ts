@@ -5,10 +5,13 @@
  *   agents/chat/index.py             → POST /chat          Main chat endpoint (SSE streaming)
  *   agents/chat/stop.py              → POST /chat/stop     Abort the active agent run
  *   agents/history/index.py           → POST /history       Get conversation history (agents runtime)
+ *   agents/auth/register.py          → POST /auth/register  Register new user
+ *   agents/auth/login.py             → POST /auth/login     Login user
+ *   agents/auth/me.py                → POST /auth/me        Get current user info
  *
  * This file defines all API paths and request wrappers. The frontend is
- * agnostic to backend language — node-starter and python-starter share the
- * same wire protocol (text_delta / tool_called / image / done / error).
+ * agnostic to backend language — node-starter and python-starter share
+ * the same wire protocol (text_delta / tool_called / image / done / error).
  */
 
 import type { Message, ImageSsePayload } from './types';
@@ -18,10 +21,123 @@ export interface ModelOption {
   owned_by?: string;
 }
 
+export interface AuthUser {
+  user_id: string;
+  email: string;
+  username: string;
+  token: string;
+}
+
+export const API = {
+  chat: '/chat',
+  chatStop: '/chat/stop',
+  history: '/history',
+  models: '/models',
+  workspaceFiles: '/workspace/files',
+  authRegister: '/auth/register',
+  authLogin: '/auth/login',
+  authMe: '/auth/me',
+} as const;
+
+// ── Auth Token Management ──
+const AUTH_TOKEN_KEY = 'eo_auth_token';
+
+export function getAuthToken(): string | null {
+  try {
+    return localStorage.getItem(AUTH_TOKEN_KEY);
+  } catch {
+    return null;
+  }
+}
+
+export function setAuthToken(token: string): void {
+  try {
+    localStorage.setItem(AUTH_TOKEN_KEY, token);
+  } catch {
+    // Non-critical
+  }
+}
+
+export function clearAuthToken(): void {
+  try {
+    localStorage.removeItem(AUTH_TOKEN_KEY);
+  } catch {
+    // Non-critical
+  }
+}
+
+function authHeaders(): Record<string, string> {
+  const token = getAuthToken();
+  if (token) {
+    return { 'Authorization': `Bearer ${token}` };
+  }
+  return {};
+}
+
+// ── Auth API ──
+
+export async function registerUser(email: string, username: string, password: string): Promise<AuthUser | { error: string }> {
+  try {
+    const res = await fetch(API.authRegister, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, username, password }),
+    });
+    const data = await res.json();
+    if (data.success && data.token) {
+      return { user_id: data.user_id, email: data.email, username: data.username, token: data.token };
+    }
+    return { error: data.error || 'Registration failed' };
+  } catch {
+    return { error: 'Network error' };
+  }
+}
+
+export async function loginUser(email: string, password: string): Promise<AuthUser | { error: string }> {
+  try {
+    const res = await fetch(API.authLogin, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password }),
+    });
+    const data = await res.json();
+    if (data.success && data.token) {
+      return { user_id: data.user_id, email: data.email, username: data.username, token: data.token };
+    }
+    return { error: data.error || 'Login failed' };
+  } catch {
+    return { error: 'Network error' };
+  }
+}
+
+export async function fetchCurrentUser(): Promise<AuthUser | null> {
+  const token = getAuthToken();
+  if (!token) return null;
+  try {
+    const res = await fetch(API.authMe, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...authHeaders(),
+      },
+      body: JSON.stringify({ token }),
+    });
+    const data = await res.json();
+    if (data.success && data.user_id) {
+      return { user_id: data.user_id, email: data.email, username: data.username, token };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 /** Fetch available models from the backend. */
 export async function fetchModels(conversationId?: string): Promise<ModelOption[]> {
   try {
-    const headers: Record<string, string> = {};
+    const headers: Record<string, string> = {
+      ...authHeaders(),
+    };
     if (conversationId) {
       headers['makers-conversation-id'] = conversationId;
     }
@@ -33,14 +149,6 @@ export async function fetchModels(conversationId?: string): Promise<ModelOption[
     return [];
   }
 }
-
-export const API = {
-  chat: '/chat',
-  chatStop: '/chat/stop',
-  history: '/history',
-  models: '/models',
-  workspaceFiles: '/workspace/files',
-} as const;
 
 export interface RawSseEvent {
   eventType: string;

@@ -2,9 +2,9 @@ import { useState } from 'react';
 import { useT } from '../i18n';
 import { 
   Sparkle, Plus, ChatTeardropText, Trash, Sun, Moon, Monitor, 
-  FolderOpen, FileText, CaretDown, CaretRight 
+  FolderOpen, FileText, CaretDown, CaretRight, SignOut
 } from '@phosphor-icons/react';
-import type { WorkspaceFile } from '../api';
+import type { WorkspaceFile, AuthUser } from '../api';
 import styles from './Sidebar.module.css';
 
 export interface ChatSessionInfo {
@@ -30,6 +30,10 @@ interface SidebarProps {
   onOpenFile: (filename: string) => void;
   onDeleteFile: (filename: string) => void;
   onCreateFile: () => void;
+
+  // Auth
+  user: AuthUser | null;
+  onLogout: () => void;
 }
 
 function formatBytes(bytes: number, decimals = 1) {
@@ -57,6 +61,8 @@ export default function Sidebar({
   onOpenFile,
   onDeleteFile,
   onCreateFile,
+  user,
+  onLogout,
 }: SidebarProps) {
   const { t } = useT();
   const [historyExpanded, setHistoryExpanded] = useState(true);
@@ -191,6 +197,51 @@ export default function Sidebar({
         )}
 
         <div className={styles.footer}>
+          {/* User info & logout */}
+          {user && (
+            <div style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              padding: '8px 12px',
+              marginBottom: '8px',
+              backgroundColor: 'var(--bg-secondary, #f5f5f5)',
+              borderRadius: '8px',
+              fontSize: '13px',
+            }}>
+              <div style={{
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+                flex: 1,
+              }}>
+                <div style={{ fontWeight: 500, color: 'var(--text-primary, #1a1a1a)' }}>
+                  {user.username}
+                </div>
+                <div style={{ color: 'var(--text-secondary, #666)', fontSize: '11px' }}>
+                  {user.email}
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={onLogout}
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  cursor: 'pointer',
+                  padding: '4px',
+                  color: 'var(--text-secondary, #666)',
+                  display: 'flex',
+                  alignItems: 'center',
+                }}
+                title="Logout"
+                aria-label="Logout"
+              >
+                <SignOut size={16} />
+              </button>
+            </div>
+          )}
+
           {sessions.length > 0 && (
             <button type="button" className={styles.clearAllBtn} onClick={onClearAll}>
               <Trash size={16} className={styles.trashIcon} />

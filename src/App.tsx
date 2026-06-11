@@ -4,7 +4,8 @@ import type { RawSseEvent, ToolDebugPayload, WorkspaceFile } from './api';
 import { 
   fetchConversationHistory, fetchModels, sendMessageStream, stopAgent,
   fetchWorkspaceFiles, readWorkspaceFile, writeWorkspaceFile, deleteWorkspaceFile,
-  fetchWorkspaceFileStatus
+  fetchWorkspaceFileStatus, getAuthToken, setAuthToken, clearAuthToken,
+  fetchCurrentUser, type AuthUser
 } from './api';
 import type { ModelOption } from './api';
 import { I18nProvider, useT } from './i18n';
@@ -13,6 +14,7 @@ import ReplStream from './components/repl/ReplStream';
 import ReplPrompt from './components/repl/ReplPrompt';
 import ImageLightbox from './components/ImageLightbox';
 import FileEditorModal from './components/FileEditorModal';
+import AuthModal from './components/AuthModal';
 import {
   makeDone,
   makeError,
@@ -245,6 +247,39 @@ function AppInner() {
     }
     localStorage.setItem('eo_theme', theme);
   }, [theme]);
+
+  // ── Auth state ──
+  const [user, setUser] = useState<AuthUser | null>(null);
+  const [authLoading, setAuthLoading] = useState(true);
+
+  // Check auth on mount
+  useEffect(() => {
+    const token = getAuthToken();
+    if (token) {
+      fetchCurrentUser().then(u => {
+        if (u) {
+          setUser(u);
+        } else {
+          clearAuthToken();
+        }
+        setAuthLoading(false);
+      }).catch(() => {
+        setAuthLoading(false);
+      });
+    } else {
+      setAuthLoading(false);
+    }
+  }, []);
+
+  const handleAuth = useCallback((authUser: AuthUser) => {
+    setAuthToken(authUser.token);
+    setUser(authUser);
+  }, []);
+
+  const handleLogout = useCallback(() => {
+    clearAuthToken();
+    setUser(null);
+  }, []);
 
   const [conversationId, setConversationId] = useState<string>(() => {
     const existing = getExistingConversationId();
@@ -1110,6 +1145,8 @@ function AppInner() {
         onOpenFile={handleOpenFile}
         onDeleteFile={handleDeleteFile}
         onCreateFile={handleCreateFile}
+        user={user}
+        onLogout={handleLogout}
       />
       <ReplShell
         modelName={selectedModel || 'Agent'}
@@ -1156,6 +1193,9 @@ function AppInner() {
           onClose={() => setEditingFile(null)}
         />
       )}
+
+      {/* Auth modal when not logged in */}
+      {!authLoading && !user && <AuthModal onAuth={handleAuth} />}
     </div>
   );
 }
