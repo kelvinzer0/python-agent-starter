@@ -68,10 +68,14 @@ export function clearAuthToken(): void {
 
 function authHeaders(): Record<string, string> {
   const token = getAuthToken();
+  const headers: Record<string, string> = {};
   if (token) {
-    return { 'Authorization': `Bearer ${token}` };
+    headers['Authorization'] = `Bearer ${token}`;
   }
-  return {};
+  // EdgeOne agents runtime requires makers-conversation-id on every request.
+  // Use a fixed ID for auth endpoints that don't belong to a conversation.
+  headers['makers-conversation-id'] = 'auth';
+  return headers;
 }
 
 // ── Auth API ──
@@ -80,7 +84,10 @@ export async function registerUser(email: string, username: string, password: st
   try {
     const res = await fetch(API.authRegister, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        ...authHeaders(),
+      },
       body: JSON.stringify({ email, username, password }),
     });
     const data = await res.json();
@@ -97,7 +104,10 @@ export async function loginUser(email: string, password: string): Promise<AuthUs
   try {
     const res = await fetch(API.authLogin, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        ...authHeaders(),
+      },
       body: JSON.stringify({ email, password }),
     });
     const data = await res.json();
