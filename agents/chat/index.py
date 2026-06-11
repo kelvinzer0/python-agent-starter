@@ -27,10 +27,11 @@ import time
 from pathlib import Path
 import inspect
 import json
-import zipfile
-import io
 import re
 import os
+import shlex
+import zipfile
+import io
 import base64
 
 import httpx
@@ -316,7 +317,7 @@ except Exception as e:
 
 
 async def sync_workspace_to_sandbox(tool_registry: ToolRegistry, files_dict: dict[str, str]) -> None:
-    """Initialize workspace files inside the stateless sandbox container under /workspace/ using a secure zip uploader."""
+    """Initialize workspace files inside the stateless sandbox container under /workspace/ using zip transfer."""
     # Clean up any existing workspace files in the sandbox to ensure deleted files are removed
     await run_sandbox_command_system(tool_registry, "rm -rf /workspace && mkdir -p /workspace")
 
@@ -407,80 +408,49 @@ async def ensure_sandbox_initialized(context: Any, tool_registry: ToolRegistry) 
         logger.log("[sandbox] Sandbox successfully initialized!")
 
 
-async def sync_workspace_from_sandbox(context: Any, tool_registry: ToolRegistry) -> None:
-    """Read updated workspace files from the sandbox and save them back to context.store KV using a secure base64-zip downloader."""
+async def sync_workspace_from_sandbox(context: Any, tool_registry: ToolRegistry) -> dict[str, str]:
+    """Read updated workspace files from the sandbox and save them back to context.store KV."""
     cid = context.conversation_id
-    
-    zip_script = """import os
-import zipfile
-import base64
 
+    # Read files from sandbox using a Python script that outputs JSON
+    list_script = """import os, json
 target = '/workspace'
-zip_path = '/tmp/workspace_out.zip'
-b64_path = '/tmp/workspace_out.zip.b64'
-
-try:
-    if os.path.exists(zip_path):
-        os.remove(zip_path)
-    if os.path.exists(b64_path):
-        os.remove(b64_path)
-
-    if os.path.exists(target):
-        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as z:
-            for root, dirs, files in os.walk(target):
-                for file in files:
-                    full_path = os.path.join(root, file)
-                    rel_path = os.path.relpath(full_path, target)
-                    z.write(full_path, rel_path)
-        
-        # Read the zip and write as base64 to file
-        with open(zip_path, 'rb') as f:
-            zip_bytes = f.read()
-        b64_data = base64.b64encode(zip_bytes).decode('utf-8')
-        with open(b64_path, 'w') as f:
-            f.write(b64_data)
-        print("SUCCESS")
-    else:
-        print("ERROR: /workspace directory not found")
-except Exception as e:
-    print("ERROR:", str(e))
+res = []
+if os.path.exists(target):
+    for root, dirs, files in os.walk(target):
+        for file in files:
+            full_path = os.path.join(root, file)
+            rel_path = os.path.relpath(full_path, target)
+            try:
+                with open(full_path, 'r', encoding='utf-8', errors='replace') as f:
+                    content = f.read()
+                res.append({"path": rel_path, "content": content})
+            except Exception:
+                pass
+print(json.dumps(res))
 """
-    await sandbox_write_file(tool_registry, "/tmp/zip_workspace.py", zip_script)
-    res = await run_sandbox_command_system(tool_registry, "python3 /tmp/zip_workspace.py")
-    await run_sandbox_command_system(tool_registry, "rm -f /tmp/zip_workspace.py")
+    await sandbox_write_file(tool_registry, "/tmp/read_workspace.py", list_script)
+    output = await run_sandbox_command_system(tool_registry, "python3 /tmp/read_workspace.py")
+    await run_sandbox_command_system(tool_registry, "rm -f /tmp/read_workspace.py")
 
-    if not res or "SUCCESS" not in res:
-        logger.log(f"[workspace] Failed to package workspace in sandbox: {res}")
-        return
-
-    # Read base64 zip content
-    b64_content = await sandbox_read_file(tool_registry, "/tmp/workspace_out.zip.b64")
-    # Clean up temporary files in sandbox
-    await run_sandbox_command_system(tool_registry, "rm -f /tmp/workspace_out.zip /tmp/workspace_out.zip.b64")
-
-    if not b64_content:
-        logger.log("[workspace] Failed to read packaged workspace zip from sandbox")
-        return
+    if not output:
+        logger.log("[workspace] Failed to read workspace from sandbox")
+        return {}
 
     try:
-        zip_bytes = base64.b64decode(b64_content.strip())
-        zip_buffer = io.BytesIO(zip_bytes)
-        updated_files = {}
-        with zipfile.ZipFile(zip_buffer, "r") as z:
-            for member in z.infolist():
-                # Read content as string
-                content = z.read(member).decode("utf-8", errors="replace")
-                updated_files[member.filename] = content
+        file_entries = json.loads(output.strip())
+        updated_files = {entry["path"]: entry["content"] for entry in file_entries}
     except Exception as e:
-        logger.log(f"[workspace] Failed to unzip workspace files: {e}")
-        return
+        logger.log(f"[workspace] Failed to parse workspace output: {e}")
+        return {}
 
-    logger.log(f"[workspace] Read {len(updated_files)} files from sandbox workspace zip")
-    
+    logger.log(f"[workspace] Read {len(updated_files)} files from sandbox via direct read")
     try:
         await save_workspace_files(context, updated_files)
     except Exception as e:
         logger.log(f"[workspace] Failed to save updated workspace to store: {e}")
+
+    return updated_files
 
 
 # ── Inotify Watcher Lifecycle ──
@@ -1501,9 +1471,26 @@ else:
                     # Ensure sandbox is still initialized before running tools
                     await ensure_sandbox_initialized(context, tool_registry)
 
+                    # ── Pre-toolcall sync: push workspace to sandbox before execution ──
+                    try:
+                        pre_files = await load_workspace_files(context)
+                        await sync_workspace_to_sandbox(tool_registry, pre_files)
+                        await run_sandbox_command_system(tool_registry, "mkdir -p /workspace_run && rsync -av --delete /workspace/ /workspace_run/")
+                        logger.log("[sync] Pre-toolcall: synced workspace to sandbox")
+                    except Exception as sync_err:
+                        logger.log(f"[sync] Pre-toolcall sync failed: {sync_err}")
+
                     # Execute wave in parallel
                     wave_tasks = [run_single_tool(tc, resolved_args) for tc, resolved_args in ready_calls_with_resolved]
                     wave_outputs = await asyncio.gather(*wave_tasks)
+
+                    # ── Post-toolcall sync: pull sandbox changes back after execution ──
+                    try:
+                        post_files = await sync_workspace_from_sandbox(context, tool_registry)
+                        if post_files:
+                            logger.log(f"[sync] Post-toolcall: synced {len(post_files)} files from sandbox")
+                    except Exception as sync_err:
+                        logger.log(f"[sync] Post-toolcall sync failed: {sync_err}")
 
                     # Check if local workspace was modified by custom tools
                     if getattr(tool_registry, "local_fs_dirty", False):

@@ -33,6 +33,11 @@ import {
   saveImage,
   type StoredImageRecord,
 } from './lib/imageStore';
+import {
+  loadConversationFiles,
+  saveFile,
+  deleteFile,
+} from './lib/workspaceStore';
 import type { ReplAction } from './components/repl/keymap';
 import Sidebar, { type ChatSessionInfo } from './components/Sidebar';
 import styles from './App.module.css';
@@ -273,6 +278,13 @@ function AppInner() {
     try {
       const cloudFiles = await fetchWorkspaceFiles(cid);
       setWorkspaceFiles(cloudFiles);
+      // Sync to IDB for offline access: read each file content and store
+      for (const f of cloudFiles) {
+        const content = await readWorkspaceFile(cid, f.name);
+        if (content) {
+          await saveFile({ conversationId: cid, filepath: f.name, content });
+        }
+      }
     } catch (err) {
       console.error('Failed to sync files from cloud:', err);
     }
@@ -875,8 +887,14 @@ function AppInner() {
     setEditingFile({ name: filename, content: '', isNew: false });
     setEditorLoading(true);
     try {
-      const content = await readWorkspaceFile(conversationId, filename);
-      setEditingFile(prev => prev ? { ...prev, content } : null);
+      // Try IDB first for offline support, fall back to server
+      const idbFiles = await loadConversationFiles(conversationId);
+      if (idbFiles[filename]) {
+        setEditingFile(prev => prev ? { ...prev, content: idbFiles[filename] } : null);
+      } else {
+        const content = await readWorkspaceFile(conversationId, filename);
+        setEditingFile(prev => prev ? { ...prev, content } : null);
+      }
     } catch (err) {
       alert('Failed to read file contents');
     } finally {
@@ -887,13 +905,15 @@ function AppInner() {
   const handleSaveFile = useCallback(async (filename: string, content: string) => {
     setEditorSaving(true);
     try {
+      // Save to IDB immediately for offline support
+      await saveFile({ conversationId, filepath: filename, content });
+      // Then sync to server
       const result = await writeWorkspaceFile(conversationId, filename, content, knownVersionRef.current || undefined);
       if (result.success) {
         knownVersionRef.current += 1;
         setEditingFile(null);
         await refreshLocalFiles();
       } else if (result.conflict) {
-        // Version conflict — re-sync and retry once
         await syncFilesFromCloud(conversationId);
         const retryResult = await writeWorkspaceFile(conversationId, filename, content);
         if (retryResult.success) {
@@ -914,6 +934,9 @@ function AppInner() {
 
   const handleDeleteFile = useCallback(async (filename: string) => {
     try {
+      // Delete from IDB immediately
+      await deleteFile(conversationId, filename);
+      // Then delete from server
       const result = await deleteWorkspaceFile(conversationId, filename, knownVersionRef.current || undefined);
       if (result.success) {
         knownVersionRef.current += 1;
