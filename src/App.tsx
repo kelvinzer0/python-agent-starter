@@ -744,7 +744,9 @@ function AppInner() {
             },
 
             onToolDebug: (payload: ToolDebugPayload) => {
-              console.log('[TOOL-DEBUG]', payload.phase, payload.tool, !!payload.argumentsPreview);
+              // Debug: store in window for Playwright to read
+              if (!(window as any).__toolDebugLogs) (window as any).__toolDebugLogs = [];
+              (window as any).__toolDebugLogs.push({ phase: payload.phase, tool: payload.tool, hasArgs: !!payload.argumentsPreview });
               if (payload.phase === 'call') {
                 // Merge call-phase data into the most recent matching tool line
                 const toolName = payload.tool;
@@ -774,16 +776,16 @@ function AppInner() {
                     const args = JSON.parse(payload.argumentsPreview);
                     const filename = args.filename || args.file || args.path;
                     const content = args.content || args.data || args.text;
-                    console.log('[IDB-PERSIST] tool_debug call:', toolName, filename, typeof content, content?.length);
+                    (window as any).__idbPersistDebug = { filename, hasContent: typeof content === 'string', contentLen: content?.length };
                     if (filename && typeof content === 'string') {
                       // Strip /workspace/ prefix if present
                       const filepath = filename.replace(/^\/workspace\//, '');
                       const cid = conversationIdRef.current;
-                      console.log('[IDB-PERSIST] saving to IDB:', cid, filepath);
+                      (window as any).__idbPersistDebug2 = { cid, filepath };
                       saveFile({ conversationId: cid, filepath, content }).then(() => {
-                        console.log('[IDB-PERSIST] saveFile OK:', filepath);
+                        (window as any).__idbPersistDebug3 = 'OK';
                       }).catch((err) => {
-                        console.error('[IDB-PERSIST] saveFile FAILED:', filepath, err);
+                        (window as any).__idbPersistDebug3 = 'FAIL:' + String(err);
                       });
                       // Update sidebar file list
                       setWorkspaceFiles(prev => {
