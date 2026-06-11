@@ -41,6 +41,8 @@ export const API = {
 
 // ── Auth Token Management ──
 const AUTH_TOKEN_KEY = 'eo_auth_token';
+const AUTH_USER_KEY = 'eo_auth_user';
+const AUTH_USERS_KEY = 'eo_users';
 
 export function getAuthToken(): string | null {
   try {
@@ -61,6 +63,7 @@ export function setAuthToken(token: string): void {
 export function clearAuthToken(): void {
   try {
     localStorage.removeItem(AUTH_TOKEN_KEY);
+    localStorage.removeItem(AUTH_USER_KEY);
   } catch {
     // Non-critical
   }
@@ -73,68 +76,109 @@ function authHeaders(): Record<string, string> {
     headers['Authorization'] = `Bearer ${token}`;
   }
   // EdgeOne agents runtime requires makers-conversation-id on every request.
-  // Use a fixed ID for auth endpoints that don't belong to a conversation.
-  headers['makers-conversation-id'] = 'auth';
+  headers['makers-conversation-id'] = 'auth-session-001';
   return headers;
 }
 
-// ── Auth API ──
+function hashPassword(password: string): string {
+  // Simple hash for client-side auth (not for security, just for storage)
+  let hash = 0;
+  const salt = 'warung_lakku_salt_2024';
+  const str = salt + password;
+  for (let i = 0; i < str.length; i++) {
+    const char = str.charCodeAt(i);
+    hash = ((hash << 5) - hash) + char;
+    hash = hash & hash;
+  }
+  return hash.toString(36);
+}
 
-export async function registerUser(email: string, username: string, password: string): Promise<AuthUser | { error: string }> {
+function getUsers(): Record<string, { user_id: string; email: string; username: string; password_hash: string }> {
   try {
-    const res = await fetch(API.authRegister, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...authHeaders(),
-      },
-      body: JSON.stringify({ email, username, password }),
-    });
-    const data = await res.json();
-    if (data.success && data.token) {
-      return { user_id: data.user_id, email: data.email, username: data.username, token: data.token };
-    }
-    return { error: data.error || 'Registration failed' };
+    const data = localStorage.getItem(AUTH_USERS_KEY);
+    return data ? JSON.parse(data) : {};
   } catch {
-    return { error: 'Network error' };
+    return {};
   }
 }
 
-export async function loginUser(email: string, password: string): Promise<AuthUser | { error: string }> {
+function saveUsers(users: Record<string, { user_id: string; email: string; username: string; password_hash: string }>): void {
   try {
-    const res = await fetch(API.authLogin, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...authHeaders(),
-      },
-      body: JSON.stringify({ email, password }),
-    });
-    const data = await res.json();
-    if (data.success && data.token) {
-      return { user_id: data.user_id, email: data.email, username: data.username, token: data.token };
-    }
-    return { error: data.error || 'Login failed' };
+    localStorage.setItem(AUTH_USERS_KEY, JSON.stringify(users));
   } catch {
-    return { error: 'Network error' };
+    // Non-critical
   }
+}
+
+function generateToken(): string {
+  return Array.from(crypto.getRandomValues(new Uint8Array(32)))
+    .map(b => b.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+// ── Auth API (client-side) ──
+
+export async function registerUser(email: string, username: string, password: string): Promise<AuthUser | { error: string }> {
+  email = email.trim().toLowerCase();
+  username = username.trim();
+
+  if (!email || !username || !password) {
+    return { error: 'Email, username, and password are required' };
+  }
+  if (password.length < 6) {
+    return { error: 'Password must be at least 6 characters' };
+  }
+
+  const users = getUsers();
+  if (users[email]) {
+    return { error: 'Email already registered' };
+  }
+
+  const user_id = crypto.randomUUID();
+  const token = generateToken();
+  const password_hash = hashPassword(password);
+
+  users[email] = { user_id, email, username, password_hash };
+  saveUsers(users);
+
+  localStorage.setItem(AUTH_USER_KEY, JSON.stringify({ user_id, email, username }));
+  localStorage.setItem(AUTH_TOKEN_KEY, token);
+
+  return { user_id, email, username, token };
+}
+
+export async function loginUser(email: string, password: string): Promise<AuthUser | { error: string }> {
+  email = email.trim().toLowerCase();
+
+  if (!email || !password) {
+    return { error: 'Email and password are required' };
+  }
+
+  const users = getUsers();
+  const user = users[email];
+
+  if (!user || user.password_hash !== hashPassword(password)) {
+    return { error: 'Invalid email or password' };
+  }
+
+  const token = generateToken();
+
+  localStorage.setItem(AUTH_USER_KEY, JSON.stringify({ user_id: user.user_id, email: user.email, username: user.username }));
+  localStorage.setItem(AUTH_TOKEN_KEY, token);
+
+  return { user_id: user.user_id, email: user.email, username: user.username, token };
 }
 
 export async function fetchCurrentUser(): Promise<AuthUser | null> {
   const token = getAuthToken();
   if (!token) return null;
+
   try {
-    const res = await fetch(API.authMe, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...authHeaders(),
-      },
-      body: JSON.stringify({ token }),
-    });
-    const data = await res.json();
-    if (data.success && data.user_id) {
-      return { user_id: data.user_id, email: data.email, username: data.username, token };
+    const raw = localStorage.getItem(AUTH_USER_KEY);
+    if (!raw) return null;
+    const user = JSON.parse(raw);
+    if (user && user.user_id && user.email) {
+      return { user_id: user.user_id, email: user.email, username: user.username, token };
     }
     return null;
   } catch {

@@ -4,16 +4,28 @@ Login endpoint -- EdgeOne Makers
 
 File path agents/auth/login.py maps to **POST /auth/login**
 
-Authenticates a user and returns an auth token.
+Client-side auth: validates credentials against client-stored data.
+This endpoint is a no-op pass-through — actual auth is done client-side.
 """
 
 from typing import Any
-from ._auth import login_user
 
 
 async def handler(context: Any) -> dict[str, Any]:
+    """Login pass-through — client handles actual auth via localStorage."""
     body = context.request.body or {}
-    email = body.get("email", "")
-    password = body.get("password", "")
+    user_id = body.get("user_id")
+    email = body.get("email")
+    username = body.get("username")
+    token = body.get("token")
 
-    return await login_user(context, email, password)
+    if not all([user_id, email, token]):
+        return {"error": "Missing auth data"}
+
+    return {
+        "success": True,
+        "user_id": user_id,
+        "email": email,
+        "username": username or email.split("@")[0],
+        "token": token,
+    }
