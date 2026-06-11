@@ -773,11 +773,17 @@ function AppInner() {
                     const args = JSON.parse(payload.argumentsPreview);
                     const filename = args.filename || args.file || args.path;
                     const content = args.content || args.data || args.text;
+                    console.log('[IDB-PERSIST] tool_debug call:', toolName, filename, typeof content, content?.length);
                     if (filename && typeof content === 'string') {
                       // Strip /workspace/ prefix if present
                       const filepath = filename.replace(/^\/workspace\//, '');
                       const cid = conversationIdRef.current;
-                      saveFile({ conversationId: cid, filepath, content }).catch(() => {});
+                      console.log('[IDB-PERSIST] saving to IDB:', cid, filepath);
+                      saveFile({ conversationId: cid, filepath, content }).then(() => {
+                        console.log('[IDB-PERSIST] saveFile OK:', filepath);
+                      }).catch((err) => {
+                        console.error('[IDB-PERSIST] saveFile FAILED:', filepath, err);
+                      });
                       // Update sidebar file list
                       setWorkspaceFiles(prev => {
                         const exists = prev.some(f => f.name === filepath);

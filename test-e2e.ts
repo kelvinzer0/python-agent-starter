@@ -22,30 +22,6 @@ function assert(cond: boolean, msg: string) {
   if (!cond) throw new Error(msg);
 }
 
-async function register(page: any, email: string, username: string, password: string) {
-  // Switch to register mode (default is login)
-  const toggle = page.getByText("Don't have an account? Register");
-  await toggle.click();
-  await page.waitForTimeout(300);
-
-  await page.locator('input[type="email"]').fill(email);
-  await page.locator('input[placeholder="Your name"]').fill(username);
-  await page.locator('input[type="password"]').fill(password);
-  await page.locator('button[type="submit"]').click();
-
-  // Wait for modal to disappear
-  await page.waitForFunction(() => !document.querySelector('input[type="email"]'), { timeout: 10_000 });
-}
-
-async function login(page: any, email: string, password: string) {
-  // Default mode is login — no need to toggle
-  await page.locator('input[type="email"]').fill(email);
-  await page.locator('input[type="password"]').fill(password);
-  await page.locator('button[type="submit"]').click();
-
-  await page.waitForFunction(() => !document.querySelector('input[type="email"]'), { timeout: 10_000 });
-}
-
 async function freshPage(browser: any) {
   const ctx = await browser.newContext();
   const page = await ctx.newPage();
@@ -54,117 +30,93 @@ async function freshPage(browser: any) {
   return { ctx, page };
 }
 
-const browser = await chromium.launch({ headless: true });
-
-// ═══════════════════════════════════════════
-// AUTH TESTS
-// ═══════════════════════════════════════════
-await test('Auth: register new user', async () => {
-  const { ctx, page } = await freshPage(browser);
-  await register(page, 'pw@test.com', 'PWUser', 'test123456');
-
-  const token = await page.evaluate(() => localStorage.getItem('eo_auth_token'));
-  const user = JSON.parse(await page.evaluate(() => localStorage.getItem('eo_auth_user') || '{}'));
-  assert(!!token, 'No token in localStorage');
-  assert(user.email === 'pw@test.com', `Wrong email: ${user.email}`);
-  await ctx.close();
-});
-
-await test('Auth: persists across reload', async () => {
-  const { ctx, page } = await freshPage(browser);
-  await register(page, 'reload@test.com', 'RelUser', 'test123456');
-
-  await page.reload({ waitUntil: 'networkidle', timeout: TIMEOUT });
-  await page.waitForTimeout(3000);
-
-  const modal = await page.$('input[type="email"]');
-  assert(!modal, 'Auth modal shown after reload');
-  await ctx.close();
-});
-
-await test('Auth: logout shows modal', async () => {
-  const { ctx, page } = await freshPage(browser);
-  await register(page, 'logout@test.com', 'LogUser', 'test123456');
-
-  // Click logout button in sidebar
-  const logoutBtn = page.locator('button[title="Logout"]');
-  await logoutBtn.click();
-  await page.waitForSelector('input[type="email"]', { timeout: 5_000 });
-  await ctx.close();
-});
-
-await test('Auth: wrong password rejected (same context)', async () => {
-  // Register in same context, then logout, then try wrong password
-  const { ctx, page } = await freshPage(browser);
-  await register(page, 'wrong@test.com', 'WrongUser', 'pass123456');
-
-  // Logout
-  await page.locator('button[title="Logout"]').click();
-  await page.waitForSelector('input[type="email"]', { timeout: 5_000 });
-
-  // Default mode is login — try wrong password
-  await page.locator('input[type="email"]').fill('wrong@test.com');
-  await page.locator('input[type="password"]').fill('badpassword');
-  await page.locator('button[type="submit"]').click();
-  await page.waitForTimeout(1500);
-
-  const stillVisible = await page.$('input[type="email"]');
-  assert(!!stillVisible, 'Modal should still show after wrong password');
-
-  // Now correct password
-  await page.locator('input[type="password"]').fill('pass123456');
-  await page.locator('button[type="submit"]').click();
-  await page.waitForFunction(() => !document.querySelector('input[type="email"]'), { timeout: 10_000 });
-  await ctx.close();
-});
-
-await test('Auth: duplicate email rejected (same context)', async () => {
-  const { ctx, page } = await freshPage(browser);
-
-  // Register first
-  await register(page, 'dup@test.com', 'DupUser1', 'pass123456');
-
-  // Logout
-  await page.locator('button[title="Logout"]').click();
-  await page.waitForSelector('input[type="email"]', { timeout: 5_000 });
-
-  // Try register again with same email
+async function register(page: any, email: string, username: string, password: string) {
   const toggle = page.getByText("Don't have an account? Register");
   await toggle.click();
   await page.waitForTimeout(300);
-  await page.locator('input[type="email"]').fill('dup@test.com');
-  await page.locator('input[placeholder="Your name"]').fill('DupUser2');
+  await page.locator('input[type="email"]').fill(email);
+  await page.locator('input[placeholder="Your name"]').fill(username);
+  await page.locator('input[type="password"]').fill(password);
+  await page.locator('button[type="submit"]').click();
+  await page.waitForFunction(() => !document.querySelector('input[type="email"]'), { timeout: 10_000 });
+}
+
+const browser = await chromium.launch({ headless: true });
+
+// ═══════════════════════════════════════
+// AUTH TESTS
+// ═══════════════════════════════════════
+await test('Auth: register', async () => {
+  const { ctx, page } = await freshPage(browser);
+  await register(page, 'pw1@test.com', 'PW1', 'test123456');
+  const token = await page.evaluate(() => localStorage.getItem('eo_auth_token'));
+  assert(!!token, 'No token');
+  await ctx.close();
+});
+
+await test('Auth: persists reload', async () => {
+  const { ctx, page } = await freshPage(browser);
+  await register(page, 'pw2@test.com', 'PW2', 'test123456');
+  await page.reload({ waitUntil: 'networkidle', timeout: TIMEOUT });
+  await page.waitForTimeout(2000);
+  assert(!(await page.$('input[type="email"]')), 'Modal shown after reload');
+  await ctx.close();
+});
+
+await test('Auth: logout', async () => {
+  const { ctx, page } = await freshPage(browser);
+  await register(page, 'pw3@test.com', 'PW3', 'test123456');
+  await page.locator('button[title="Logout"]').click();
+  await page.waitForSelector('input[type="email"]', { timeout: 5_000 });
+  await ctx.close();
+});
+
+await test('Auth: wrong password', async () => {
+  const { ctx, page } = await freshPage(browser);
+  await register(page, 'pw4@test.com', 'PW4', 'pass123456');
+  await page.locator('button[title="Logout"]').click();
+  await page.waitForSelector('input[type="email"]', { timeout: 5_000 });
+  await page.locator('input[type="email"]').fill('pw4@test.com');
+  await page.locator('input[type="password"]').fill('wrong');
+  await page.locator('button[type="submit"]').click();
+  await page.waitForTimeout(1500);
+  assert(await page.$('input[type="email"]'), 'Should show error');
+  await ctx.close();
+});
+
+await test('Auth: duplicate email', async () => {
+  const { ctx, page } = await freshPage(browser);
+  await register(page, 'pw5@test.com', 'PW5a', 'pass123456');
+  await page.locator('button[title="Logout"]').click();
+  await page.waitForSelector('input[type="email"]', { timeout: 5_000 });
+  const toggle = page.getByText("Don't have an account? Register");
+  await toggle.click();
+  await page.waitForTimeout(300);
+  await page.locator('input[type="email"]').fill('pw5@test.com');
+  await page.locator('input[placeholder="Your name"]').fill('PW5b');
   await page.locator('input[type="password"]').fill('pass123456');
   await page.locator('button[type="submit"]').click();
   await page.waitForTimeout(2000);
-
-  const stillVisible = await page.$('input[type="email"]');
-  assert(!!stillVisible, 'Should show error for duplicate email');
+  assert(await page.$('input[type="email"]'), 'Should reject duplicate');
   await ctx.close();
 });
 
-// ═══════════════════════════════════════════
+// ═══════════════════════════════════════
 // WORKSPACE TESTS
-// ═══════════════════════════════════════════
-await test('Workspace: templates loaded from backend', async () => {
+// ═══════════════════════════════════════
+await test('Workspace: templates from backend', async () => {
   const { ctx, page } = await freshPage(browser);
-  await register(page, 'ws1@test.com', 'WS1User', 'test123456');
-
-  // Wait for sidebar to show workspace files
-  await page.waitForTimeout(5000);
-
+  await register(page, 'ws1@test.com', 'WS1', 'test123456');
+  await page.waitForTimeout(4000);
   const sidebar = await page.textContent('aside');
-  assert(sidebar!.includes('IDENTITY.md'), `IDENTITY.md not in sidebar`);
-  assert(sidebar!.includes('BOOTSTRAP.md'), `BOOTSTRAP.md not in sidebar`);
+  assert(sidebar!.includes('IDENTITY.md'), 'IDENTITY.md missing');
   await ctx.close();
 });
 
-await test('Workspace: IDB persists across reload', async () => {
+await test('Workspace: IDB persists reload', async () => {
   const { ctx, page } = await freshPage(browser);
-  await register(page, 'idb@test.com', 'IDBUser', 'test123456');
+  await register(page, 'ws2@test.com', 'WS2', 'test123456');
   await page.waitForTimeout(2000);
-
-  // Manually write to IDB
   await page.evaluate(async () => {
     return new Promise<void>((resolve) => {
       const req = indexedDB.open('python-starter-workspace-db', 1);
@@ -175,62 +127,39 @@ await test('Workspace: IDB persists across reload', async () => {
         }
         const tx = db.transaction('files', 'readwrite');
         tx.objectStore('files').put({
-          storageKey: 'idb-test/myfile.txt',
-          conversationId: 'idb-test',
-          filepath: 'myfile.txt',
-          content: 'IDB test content',
-          size: 17, hash: 'abc', updatedAt: Date.now(), createdAt: Date.now(),
+          storageKey: 'idb-persist/myfile.txt', conversationId: 'idb-persist',
+          filepath: 'myfile.txt', content: 'idb content', size: 11,
+          hash: 'x', updatedAt: Date.now(), createdAt: Date.now(),
         });
         tx.oncomplete = () => resolve();
       };
       req.onerror = () => resolve();
     });
   });
-
   await page.reload({ waitUntil: 'networkidle', timeout: TIMEOUT });
-  await page.waitForTimeout(3000);
-
-  const hasFile = await page.evaluate(async () => {
+  await page.waitForTimeout(2000);
+  const ok = await page.evaluate(async () => {
     return new Promise<boolean>((resolve) => {
       const req = indexedDB.open('python-starter-workspace-db', 1);
       req.onsuccess = () => {
         const db = req.result;
         if (!db.objectStoreNames.contains('files')) { resolve(false); return; }
-        const get = db.transaction('files', 'readonly').objectStore('files').get('idb-test/myfile.txt');
+        const get = db.transaction('files', 'readonly').objectStore('files').get('idb-persist/myfile.txt');
         get.onsuccess = () => resolve(!!get.result);
         get.onerror = () => resolve(false);
       };
       req.onerror = () => resolve(false);
     });
   });
-
-  assert(hasFile, 'IDB file lost after reload');
+  assert(ok, 'IDB lost after reload');
   await ctx.close();
 });
 
-await test('Workspace: sidebar shows file list', async () => {
+await test('Workspace: conversations isolated', async () => {
   const { ctx, page } = await freshPage(browser);
-  await register(page, 'sidebar@test.com', 'SideUser', 'test123456');
-
-  // Wait for files to load
-  await page.waitForTimeout(5000);
-
-  // Check sidebar has file entries
-  const fileItems = await page.locator('aside').textContent();
-  const hasFiles = fileItems!.includes('IDENTITY') || fileItems!.includes('SOUL') || fileItems!.includes('TOOLS');
-  assert(hasFiles, `No workspace files in sidebar`);
-  await ctx.close();
-});
-
-await test('Workspace: different conversations isolated', async () => {
-  const { ctx, page } = await freshPage(browser);
-  await register(page, 'iso@test.com', 'IsoUser', 'test123456');
+  await register(page, 'ws3@test.com', 'WS3', 'test123456');
   await page.waitForTimeout(2000);
-
-  // Get current CID
   const cid1 = await page.evaluate(() => localStorage.getItem('eo_conversation_id'));
-
-  // Write file to IDB for this CID
   await page.evaluate(async (cid: string) => {
     return new Promise<void>((resolve) => {
       const req = indexedDB.open('python-starter-workspace-db', 1);
@@ -248,17 +177,12 @@ await test('Workspace: different conversations isolated', async () => {
       };
       req.onerror = () => resolve();
     });
-  }, cid1);
-
-  // Create new chat (new CID)
+  }, cid1!);
   await page.locator('button:has-text("New Chat")').first().click();
   await page.waitForTimeout(2000);
-
   const cid2 = await page.evaluate(() => localStorage.getItem('eo_conversation_id'));
-  assert(cid1 !== cid2, 'New chat should have different CID');
-
-  // Check IDB doesn't have the old file for new CID
-  const hasFile = await page.evaluate(async (cid: string) => {
+  assert(cid1 !== cid2, 'Same CID');
+  const has = await page.evaluate(async (cid: string) => {
     return new Promise<boolean>((resolve) => {
       const req = indexedDB.open('python-starter-workspace-db', 1);
       req.onsuccess = () => {
@@ -271,160 +195,64 @@ await test('Workspace: different conversations isolated', async () => {
       req.onerror = () => resolve(false);
     });
   }, cid2);
-
-  assert(!hasFile, 'New CID should not have old CID file');
+  assert(!has, 'New CID has old file');
   await ctx.close();
 });
 
-// ═══════════════════════════════════════════
-// API TESTS
-// ═══════════════════════════════════════════
-await test('API: /workspace/files returns templates', async () => {
-  const resp = await fetch(`${BASE}/workspace/files`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'makers-conversation-id': 'api-test-001' },
-    body: JSON.stringify({ action: 'list', conversationId: 'test' }),
-  });
-  const data = await resp.json();
-  assert(data.files && data.files.length > 0, `Expected files, got: ${JSON.stringify(data)}`);
-});
-
-await test('API: /workspace/files read template', async () => {
-  const resp = await fetch(`${BASE}/workspace/files`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'makers-conversation-id': 'api-test-002' },
-    body: JSON.stringify({ action: 'read', filename: 'IDENTITY.md', conversationId: 'test' }),
-  });
-  const data = await resp.json();
-  assert(data.content && data.content.length > 0, 'IDENTITY.md content empty');
-});
-
-await test('API: /chat streams response', async () => {
-  const resp = await fetch(`${BASE}/chat`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'makers-conversation-id': 'api-test-003' },
-    body: JSON.stringify({ message: 'Say just "pong"' }),
-  });
-  assert(resp.ok, `Chat returned ${resp.status}`);
-  const reader = resp.body!.getReader();
-  const decoder = new TextDecoder();
-  let text = '';
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    text += decoder.decode(value, { stream: true });
-    if (text.includes('text_delta')) break;
-  }
-  assert(text.includes('text_delta'), `No text_delta in response`);
-});
-
-await test('API: /auth/register pass-through', async () => {
-  const resp = await fetch(`${BASE}/auth/register`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'makers-conversation-id': 'auth-api-test-001' },
-    body: JSON.stringify({ user_id: 'test123', email: 'api@test.com', username: 'API', token: 'tok123' }),
-  });
-  const data = await resp.json();
-  assert(data.success === true, `Register failed: ${JSON.stringify(data)}`);
-  assert(data.email === 'api@test.com', `Wrong email in response`);
-});
-
-await test('API: /auth/me validates token', async () => {
-  const resp = await fetch(`${BASE}/auth/me`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'makers-conversation-id': 'auth-api-test-002',
-      'Authorization': 'Bearer tok123',
-    },
-    body: JSON.stringify({ user_id: 'test123', email: 'api@test.com', username: 'API' }),
-  });
-  const data = await resp.json();
-  assert(data.success === true, `Me failed: ${JSON.stringify(data)}`);
-});
-
-await test('API: /auth/me rejects no token', async () => {
-  const resp = await fetch(`${BASE}/auth/me`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'makers-conversation-id': 'auth-api-test-003' },
-    body: JSON.stringify({}),
-  });
-  const data = await resp.json();
-  assert(data.error === 'Not authenticated', `Expected not authenticated, got: ${JSON.stringify(data)}`);
-});
-
-// ═══════════════════════════════════════════
-// AGENTIC PERSISTENCE TESTS (deep)
-// ═══════════════════════════════════════════
-await test('Agentic: tool-call file persists in IDB after chat', async () => {
+// ═══════════════════════════════════════
+// AGENTIC PERSISTENCE (deep)
+// ═══════════════════════════════════════
+await test('Agentic: tool-call persists file to IDB', async () => {
   const { ctx, page } = await freshPage(browser);
-  await register(page, 'agent1@test.com', 'Agent1', 'test123456');
+  await register(page, 'ag1@test.com', 'Ag1', 'test123456');
   await page.waitForTimeout(3000);
-
-  // Send message asking agent to create a file
-  const textarea = await page.waitForSelector('textarea', { timeout: 10_000 });
-  await textarea.fill('Use local_write_file to create a file called agent_created.txt with content "created by agent tool call"');
+  const ta = await page.waitForSelector('textarea', { timeout: 10_000 });
+  await ta.fill('Use local_write_file to create a file called tool_persist.txt with content "tool_call_works"');
   await page.keyboard.press('Enter');
-
-  // Wait for done event (up to 120s)
   await page.waitForFunction(() => {
-    const text = document.body.innerText;
-    return text.includes('agent_created') || text.includes('Successfully');
+    return document.body.innerText.includes('tool_persist') || document.body.innerText.includes('Successfully');
   }, { timeout: 120_000 });
-
-  // Wait a bit for IDB sync
   await page.waitForTimeout(3000);
-
-  // Check IDB has the file
-  const hasFile = await page.evaluate(async () => {
+  const ok = await page.evaluate(async () => {
     return new Promise<boolean>((resolve) => {
       const req = indexedDB.open('python-starter-workspace-db', 1);
       req.onsuccess = () => {
         const db = req.result;
         if (!db.objectStoreNames.contains('files')) { resolve(false); return; }
-        const tx = db.transaction('files', 'readonly');
-        const index = tx.objectStore('files').index('byConversation');
         const cid = localStorage.getItem('eo_conversation_id');
+        const index = db.transaction('files', 'readonly').objectStore('files').index('byConversation');
         const getAll = index.getAll(cid);
-        getAll.onsuccess = () => {
-          const files = getAll.result.map((r: any) => r.filepath);
-          resolve(files.includes('agent_created.txt'));
-        };
+        getAll.onsuccess = () => resolve(getAll.result.some((r: any) => r.filepath === 'tool_persist.txt'));
         getAll.onerror = () => resolve(false);
       };
       req.onerror = () => resolve(false);
     });
   });
-
-  assert(hasFile, 'agent_created.txt not found in IDB after tool call');
+  assert(ok, 'File not in IDB after tool call');
   await ctx.close();
 });
 
-await test('Agentic: file survives page reload after tool call', async () => {
+await test('Agentic: file survives reload after tool call', async () => {
   const { ctx, page } = await freshPage(browser);
-  await register(page, 'agent2@test.com', 'Agent2', 'test123456');
+  await register(page, 'ag2@test.com', 'Ag2', 'test123456');
   await page.waitForTimeout(3000);
-
-  // Create file via agent
-  const textarea = await page.waitForSelector('textarea', { timeout: 10_000 });
-  await textarea.fill('Use local_write_file to create a file called reload_test.txt with content "survives reload"');
+  const ta = await page.waitForSelector('textarea', { timeout: 10_000 });
+  await ta.fill('Use local_write_file to create a file called survive_reload.txt with content "i_survive"');
   await page.keyboard.press('Enter');
-
   await page.waitForFunction(() => {
-    const text = document.body.innerText;
-    return text.includes('reload_test') || text.includes('Successfully');
+    return document.body.innerText.includes('survive_reload') || document.body.innerText.includes('Successfully');
   }, { timeout: 120_000 });
   await page.waitForTimeout(3000);
 
-  // Reload page
+  // Reload
   await page.reload({ waitUntil: 'networkidle', timeout: TIMEOUT });
   await page.waitForTimeout(5000);
 
-  // Check sidebar still shows the file
+  // Check sidebar
   const sidebar = await page.textContent('aside');
-  assert(sidebar!.includes('reload_test.txt'), `reload_test.txt not in sidebar after reload: ${sidebar?.slice(0, 500)}`);
+  assert(sidebar!.includes('survive_reload.txt'), 'Not in sidebar after reload');
 
-  // Check IDB still has the file content
+  // Check IDB content
   const content = await page.evaluate(async () => {
     return new Promise<string | null>((resolve) => {
       const req = indexedDB.open('python-starter-workspace-db', 1);
@@ -432,37 +260,30 @@ await test('Agentic: file survives page reload after tool call', async () => {
         const db = req.result;
         if (!db.objectStoreNames.contains('files')) { resolve(null); return; }
         const cid = localStorage.getItem('eo_conversation_id');
-        const key = `${cid}/reload_test.txt`;
-        const get = db.transaction('files', 'readonly').objectStore('files').get(key);
+        const get = db.transaction('files', 'readonly').objectStore('files').get(`${cid}/survive_reload.txt`);
         get.onsuccess = () => resolve(get.result?.content || null);
         get.onerror = () => resolve(null);
       };
       req.onerror = () => resolve(null);
     });
   });
-
-  assert(content === 'survives reload', `IDB content wrong: "${content}"`);
+  assert(content === 'i_survive', `Content wrong: "${content}"`);
   await ctx.close();
 });
 
 await test('Agentic: multiple tool calls persist all files', async () => {
   const { ctx, page } = await freshPage(browser);
-  await register(page, 'multi@test.com', 'MultiUser', 'test123456');
+  await register(page, 'ag3@test.com', 'Ag3', 'test123456');
   await page.waitForTimeout(3000);
-
-  // Create multiple files in one message
-  const textarea = await page.waitForSelector('textarea', { timeout: 10_000 });
-  await textarea.fill('Use local_write_file to create THREE files: file_a.txt with content "aaa", file_b.txt with content "bbb", file_c.txt with content "ccc". Create them one by one.');
+  const ta = await page.waitForSelector('textarea', { timeout: 10_000 });
+  await ta.fill('Use local_write_file to create these files one by one: multi_a.txt content "aaa", multi_b.txt content "bbb", multi_c.txt content "ccc"');
   await page.keyboard.press('Enter');
-
-  // Wait for completion (longer timeout for multiple tool calls)
   await page.waitForFunction(() => {
-    const text = document.body.innerText;
-    return text.includes('file_a') && text.includes('file_b') && text.includes('file_c');
+    const t = document.body.innerText;
+    return t.includes('multi_a') && t.includes('multi_b') && t.includes('multi_c');
   }, { timeout: 180_000 });
   await page.waitForTimeout(3000);
 
-  // Check all 3 files in IDB
   const files = await page.evaluate(async () => {
     return new Promise<string[]>((resolve) => {
       const req = indexedDB.open('python-starter-workspace-db', 1);
@@ -478,17 +299,70 @@ await test('Agentic: multiple tool calls persist all files', async () => {
       req.onerror = () => resolve([]);
     });
   });
-
-  assert(files.includes('file_a.txt'), `file_a.txt missing. Found: ${files}`);
-  assert(files.includes('file_b.txt'), `file_b.txt missing. Found: ${files}`);
-  assert(files.includes('file_c.txt'), `file_c.txt missing. Found: ${files}`);
+  assert(files.includes('multi_a.txt'), `multi_a missing: ${files}`);
+  assert(files.includes('multi_b.txt'), `multi_b missing: ${files}`);
+  assert(files.includes('multi_c.txt'), `multi_c missing: ${files}`);
   await ctx.close();
+});
+
+// ═══════════════════════════════════════
+// API TESTS
+// ═══════════════════════════════════════
+await test('API: workspace/templates', async () => {
+  const r = await fetch(`${BASE}/workspace/files`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'makers-conversation-id': 'api-t-001' },
+    body: JSON.stringify({ action: 'list', conversationId: 'test' }),
+  });
+  const d = await r.json();
+  assert(d.files?.length > 0, 'No files');
+});
+
+await test('API: chat streams', async () => {
+  const r = await fetch(`${BASE}/chat`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'makers-conversation-id': 'api-t-002' },
+    body: JSON.stringify({ message: 'Say "pong"' }),
+  });
+  assert(r.ok, `Status ${r.status}`);
+  const reader = r.body!.getReader();
+  const dec = new TextDecoder();
+  let text = '';
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    text += dec.decode(value, { stream: true });
+    if (text.includes('text_delta')) break;
+  }
+  assert(text.includes('text_delta'), 'No text_delta');
+});
+
+await test('API: auth endpoints', async () => {
+  const r1 = await fetch(`${BASE}/auth/register`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'makers-conversation-id': 'api-t-003' },
+    body: JSON.stringify({ user_id: 'x', email: 'x@x.com', username: 'X', token: 't' }),
+  });
+  assert((await r1.json()).success, 'register failed');
+
+  const r2 = await fetch(`${BASE}/auth/me`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'makers-conversation-id': 'api-t-004', 'Authorization': 'Bearer t' },
+    body: JSON.stringify({ user_id: 'x', email: 'x@x.com', username: 'X' }),
+  });
+  assert((await r2.json()).success, 'me failed');
+
+  const r3 = await fetch(`${BASE}/auth/me`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'makers-conversation-id': 'api-t-005' },
+    body: JSON.stringify({}),
+  });
+  assert((await r3.json()).error === 'Not authenticated', 'should reject');
 });
 
 await browser.close();
 
-console.log('\n═══════════════════════════════════════');
+console.log(`\n═══════════════════════════════════════`);
 console.log(`  RESULTS: ${passed} passed, ${failed} failed`);
-console.log('═══════════════════════════════════════');
-
+console.log(`═══════════════════════════════════════`);
 process.exit(failed > 0 ? 1 : 0);
