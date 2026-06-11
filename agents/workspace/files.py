@@ -212,19 +212,28 @@ async def load_workspace_files(context: Any, skip_templates: bool = False) -> di
     """Load workspace files from store (falls back to message history if KV is empty/unsupported).
     Falls back to project templates if store is empty, unless skip_templates is True.
     When templates are loaded, they are auto-saved to KV for persistence.
+
+    Priority: IDB cache (from sync-from-idb) → KV → templates.
     """
-    raw = await _load_workspace_raw(context)
-    files_dict = _unwrap_files(raw)
-
-    if files_dict:
-        return files_dict
-
-    # Resolve conversation_id dynamically for logging
+    # 1. Check IDB cache first (source of truth when KV is broken)
     cid = getattr(context, "conversation_id", None)
     if not cid and hasattr(context, "request") and getattr(context.request, "body", None):
         body = context.request.body or {}
         if isinstance(body, dict):
             cid = body.get("conversationId") or body.get("conversation_id")
+
+    if cid:
+        cached = get_workspace_cache(cid)
+        if cached is not None:
+            logger.log(f"[workspace] Loaded {len(cached)} files from IDB cache for {cid[:8]}")
+            return cached
+
+    # 2. Fall back to KV / history
+    raw = await _load_workspace_raw(context)
+    files_dict = _unwrap_files(raw)
+
+    if files_dict:
+        return files_dict
 
     # If both failed/empty, load templates (unless skipped)
     if skip_templates:
@@ -335,6 +344,22 @@ async def save_workspace_files(context: Any, files_dict: dict[str, str]) -> None
         logger.log(f"[workspace] Failed to save workspace to conversation history: {e}")
 
 
+# ── Request-scoped workspace cache (IDB is source of truth) ──
+# When sync-from-idb pushes frontend files, they land here.
+# load_workspace_files reads from this cache before falling back to templates.
+_workspace_cache: dict[str, dict[str, str]] = {}
+
+
+def set_workspace_cache(conversation_id: str, files: dict[str, str]) -> None:
+    """Store workspace files in request-scoped cache (from frontend IDB)."""
+    _workspace_cache[conversation_id] = files
+
+
+def get_workspace_cache(conversation_id: str) -> dict[str, str] | None:
+    """Get cached workspace files for a conversation (from frontend IDB)."""
+    return _workspace_cache.get(conversation_id)
+
+
 # ── Active tool registry reference for sandbox sync ──
 
 _active_tool_registry = None
@@ -350,13 +375,31 @@ def clear_active_tool_registry():
     _active_tool_registry = None
 
 
+def get_active_tool_registry():
+    """Get the active tool registry (for external callers like sync-from-idb)."""
+    return _active_tool_registry
+
+
 async def snapshot_workspace(context: Any) -> dict[str, str]:
-    """Read-only snapshot of the workspace file map from KV.
+    """Read-only snapshot of the workspace file map.
 
     Unlike ``load_workspace_files``, this skips template fallback and
     version-bookkeeping side-effects — it simply returns whatever is
     currently stored (or an empty dict if nothing is stored yet).
+
+    Priority: IDB cache → KV → empty.
     """
+    # Check IDB cache first
+    cid = getattr(context, "conversation_id", None)
+    if not cid and hasattr(context, "request") and getattr(context.request, "body", None):
+        body = context.request.body or {}
+        if isinstance(body, dict):
+            cid = body.get("conversationId") or body.get("conversation_id")
+    if cid:
+        cached = get_workspace_cache(cid)
+        if cached is not None:
+            return cached
+
     raw = await _load_workspace_raw(context)
     return _unwrap_files(raw)
 
@@ -463,10 +506,12 @@ async def handler(context: Any) -> dict[str, Any]:
             tool_registry = _active_tool_registry
             if tool_registry:
                 try:
-                    from ..chat.index import sandbox_write_file, run_sandbox_command_system
+                    from ..chat.index import sandbox_write_file
                     await sandbox_write_file(tool_registry, f"/workspace/{filename}", content)
-                    new_version = await load_workspace_version(context)
-                    await sandbox_write_file(tool_registry, "/tmp/.workspace_version", str(new_version))
+                    # Also update cache so next request has latest state
+                    cid = getattr(context, "conversation_id", None)
+                    if cid:
+                        set_workspace_cache(cid, files_dict)
                     logger.log(f"[workspace_files] Automatically synced write {filename} to sandbox")
                 except Exception as ex:
                     logger.error(f"[workspace_files] Failed to sync write to sandbox: {ex}")
@@ -499,10 +544,12 @@ async def handler(context: Any) -> dict[str, Any]:
             tool_registry = _active_tool_registry
             if tool_registry:
                 try:
-                    from ..chat.index import run_sandbox_command_system, sandbox_write_file
+                    from ..chat.index import run_sandbox_command_system
                     await run_sandbox_command_system(tool_registry, f"rm -f /workspace/{shlex.quote(filename)}")
-                    new_version = await load_workspace_version(context)
-                    await sandbox_write_file(tool_registry, "/tmp/.workspace_version", str(new_version))
+                    # Also update cache so next request has latest state
+                    cid = getattr(context, "conversation_id", None)
+                    if cid:
+                        set_workspace_cache(cid, files_dict)
                     logger.log(f"[workspace_files] Automatically synced delete {filename} to sandbox")
                 except Exception as ex:
                     logger.error(f"[workspace_files] Failed to sync delete to sandbox: {ex}")

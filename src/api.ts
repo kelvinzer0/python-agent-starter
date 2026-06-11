@@ -267,6 +267,7 @@ export function sendMessageStream(
   callbacks: StreamCallbacks,
   conversationId?: string,
   model?: string,
+  workspaceFiles?: Record<string, string>,
 ): AbortController {
   const ctrl = new AbortController();
 
@@ -279,10 +280,14 @@ export function sendMessageStream(
         headers['makers-conversation-id'] = conversationId;
       }
 
+      const body: Record<string, unknown> = { message, model };
+      if (workspaceFiles && Object.keys(workspaceFiles).length > 0) {
+        body.workspace_files = workspaceFiles;
+      }
       const res = await fetch(API.chat, {
         method: 'POST',
         headers,
-        body: JSON.stringify({ message, model }),
+        body: JSON.stringify(body),
         signal: ctrl.signal,
       });
 

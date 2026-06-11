@@ -43,7 +43,7 @@ from .._session import ChatSession
 from .._tools import build_tools, ToolRegistry, _stringify_result
 from ._stream import LlmRoundResult, sse_event, stream_llm_round, safe_json_preview
 from ._images import extract_images_from_tool_result
-from ..workspace.files import snapshot_workspace, load_workspace_files, save_workspace_files, load_workspace_version, _load_workspace_raw, _unwrap_files
+from ..workspace.files import snapshot_workspace, load_workspace_files, save_workspace_files, load_workspace_version, _load_workspace_raw, _unwrap_files, get_workspace_cache, set_workspace_cache
 
 
 logger = create_logger("chat")
@@ -300,29 +300,32 @@ async def sync_workspace_to_sandbox(tool_registry: ToolRegistry, files_dict: dic
 
 
 async def ensure_sandbox_initialized(context: Any, tool_registry: ToolRegistry) -> None:
-    """Check if the sandbox container has lost its workspace or skills, and reinitialize on the fly if needed."""
+    """Ensure sandbox is initialized with workspace files and skills.
+
+    Workspace files come from IDB cache (synced via /workspace/sync-from-idb).
+    If no cache exists, falls back to templates from filesystem.
+    """
     init_res = await run_sandbox_command_system(tool_registry, "cat /tmp/.sandbox_init 2>/dev/null")
-    
-    current_version = await load_workspace_version(context)
-    sandbox_version_str = await sandbox_read_file(tool_registry, "/tmp/.workspace_version")
-    try:
-        sandbox_version = int(sandbox_version_str.strip()) if sandbox_version_str else -1
-    except Exception:
-        sandbox_version = -1
 
-    needs_workspace_sync = (not init_res or "/tmp/.sandbox_init" not in init_res or sandbox_version != current_version)
+    # Sync workspace files from cache (IDB is source of truth)
+    cid = getattr(context, "conversation_id", None)
+    has_cache = cid and get_workspace_cache(cid) is not None
 
-    if needs_workspace_sync:
-        logger.log(f"[sandbox] Workspace sync needed (sandbox version: {sandbox_version}, cloud version: {current_version}). Syncing...")
+    if has_cache:
+        files_dict = get_workspace_cache(cid)
+        logger.log(f"[sandbox] Syncing {len(files_dict)} cached files to sandbox")
+    else:
+        # No cache — load from KV or templates
         files_dict = await load_workspace_files(context)
+        if files_dict:
+            logger.log(f"[sandbox] Syncing {len(files_dict)} files (from templates/KV) to sandbox")
+
+    if files_dict:
         await sync_workspace_to_sandbox(tool_registry, files_dict)
-        await sandbox_write_file(tool_registry, "/tmp/.workspace_version", str(current_version))
 
     if not init_res or "/tmp/.sandbox_init" not in init_res:
         logger.log("[sandbox] Sandbox sentinel missing. Deploying skills...")
-        # Re-sync skills
         await sync_skills_to_sandbox(tool_registry)
-        # Write the sentinel file
         await sandbox_write_file(tool_registry, "/tmp/.sandbox_init", "1")
         logger.log("[sandbox] Sandbox successfully initialized!")
 
@@ -906,6 +909,12 @@ async def handler(context: Any) -> AsyncGenerator[str, None]:
     # Allow request to override the default model
     request_model = body.get("model") if isinstance(body, dict) else None
     model = request_model or MODEL_CONFIG["model"]
+
+    # Accept workspace files embedded in chat request (IDB is source of truth)
+    workspace_files = body.get("workspace_files") if isinstance(body, dict) else None
+    if workspace_files and isinstance(workspace_files, dict) and cid:
+        set_workspace_cache(cid, workspace_files)
+        logger.log(f"[handler] Received {len(workspace_files)} workspace files from client")
 
     # ── Tracer: set request-level attributes ──
     context.tracer.set_attributes({
@@ -1576,52 +1585,53 @@ else:
             save_span.end()
 
 
-    # ── Workspace: Merge sandbox changes back to KV (never overwrite user's external edits) ──
+    # ── Workspace: Merge sandbox changes back to cache (IDB is source of truth) ──
     if 'tool_registry' in locals() and tool_registry:
         try:
-            logger.log("[workspace] Merging sandbox workspace changes back to KV...")
+            logger.log("[workspace] Merging sandbox workspace changes back to cache...")
             sandbox_files = await sync_workspace_from_sandbox(context, tool_registry)
 
             if sandbox_files is not None:
-                # Load current KV state (may include user's frontend edits made during this turn)
-                current_kv = await load_workspace_files(context)
+                # Load current state (from cache if IDB synced, or templates)
+                current = await load_workspace_files(context)
                 # pre-turn snapshot was loaded at handler start into files_dict
                 pre_turn = files_dict  # dict captured at top of handler
 
-                merged = dict(current_kv)  # start from latest KV (includes user edits)
+                merged = dict(current)  # start from latest (includes user edits)
                 agent_changed = 0
                 for fname, sb_content in sandbox_files.items():
                     pre_content = pre_turn.get(fname)
-                    kv_content = current_kv.get(fname)
+                    current_content = current.get(fname)
                     # Agent changed this file if sandbox content differs from pre-turn snapshot
                     agent_modified = sb_content != pre_content
-                    # User externally edited if KV content differs from pre-turn snapshot
-                    user_modified = kv_content != pre_content
+                    # User externally edited if current content differs from pre-turn snapshot
+                    user_modified = current_content != pre_content
                     if agent_modified and not user_modified:
                         # Safe to take agent's version
                         merged[fname] = sb_content
                         agent_changed += 1
                     elif agent_modified and user_modified:
-                        # Conflict: agent and user both changed — prefer user's edit (KV wins)
-                        logger.log(f"[workspace] Merge conflict on '{fname}': keeping user's KV version")
-                    # else: neither changed, or only user changed → KV already correct
+                        # Conflict: agent and user both changed — prefer user's edit
+                        logger.log(f"[workspace] Merge conflict on '{fname}': keeping user's version")
+                    # else: neither changed, or only user changed → current already correct
 
                 # Also remove files that agent deleted (existed in pre-turn but not in sandbox)
                 for fname in list(pre_turn.keys()):
                     if fname not in sandbox_files and fname in merged:
                         # Agent deleted it (and user didn't re-create it externally)
-                        if current_kv.get(fname) == pre_turn.get(fname):
+                        if current.get(fname) == pre_turn.get(fname):
                             del merged[fname]
                             agent_changed += 1
 
                 if agent_changed > 0:
-                    await save_workspace_files(context, merged)
-                    logger.log(f"[workspace] Merged {agent_changed} agent-changed files into KV")
+                    # Update the cache so next request in this conversation has latest state
+                    cid = getattr(context, "conversation_id", None)
+                    if cid:
+                        set_workspace_cache(cid, merged)
+                    logger.log(f"[workspace] Merged {agent_changed} agent-changed files into cache")
 
             # Update sandbox version sentinel and notify frontend
-            current_version = await load_workspace_version(context)
-            await sandbox_write_file(tool_registry, "/tmp/.workspace_version", str(current_version))
-            yield sse_event("file_changed", {"version": current_version})
+            yield sse_event("file_changed", {"version": 0, "files_snapshot": sandbox_files or None})
         except Exception as e:
             logger.error(f"[workspace] Failed to merge workspace from sandbox at end of turn: {e}")
 

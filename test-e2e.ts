@@ -102,7 +102,7 @@ await test('Auth: duplicate email', async () => {
 });
 
 // ═══════════════════════════════════════
-// WORKSPACE TESTS
+// WORKSPACE TESTS (IDB-first architecture)
 // ═══════════════════════════════════════
 await test('Workspace: templates from backend', async () => {
   const { ctx, page } = await freshPage(browser);
@@ -199,14 +199,60 @@ await test('Workspace: conversations isolated', async () => {
   await ctx.close();
 });
 
+await test('Workspace: IDB files embedded in chat request', async () => {
+  const { ctx, page } = await freshPage(browser);
+  await register(page, 'ws4@test.com', 'WS4', 'test123456');
+  await page.waitForTimeout(1000);
+
+  // Manually put a file in IDB
+  await page.evaluate(async () => {
+    return new Promise<void>((resolve) => {
+      const req = indexedDB.open('python-starter-workspace-db', 1);
+      req.onsuccess = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains('files')) {
+          db.createObjectStore('files', { keyPath: 'storageKey' });
+        }
+        const cid = localStorage.getItem('eo_conversation_id');
+        const tx = db.transaction('files', 'readwrite');
+        tx.objectStore('files').put({
+          storageKey: `${cid}/embedded.txt`, conversationId: cid!, filepath: 'embedded.txt',
+          content: 'from_idb', size: 8, hash: 'x', updatedAt: Date.now(), createdAt: Date.now(),
+        });
+        tx.oncomplete = () => resolve();
+      };
+      req.onerror = () => resolve();
+    });
+  });
+
+  // Intercept the chat request to verify workspace_files is included
+  let capturedBody: any = null;
+  page.on('request', (req: any) => {
+    if (req.url().includes('/chat') && req.method() === 'POST') {
+      try { capturedBody = JSON.parse(req.postData()); } catch {}
+    }
+  });
+
+  const ta = await page.waitForSelector('textarea', { timeout: 8_000 });
+  await ta.fill('Say OK');
+  await page.keyboard.press('Enter');
+  await page.waitForFunction(() => document.body.innerText.includes('OK'), { timeout: 90_000 });
+  await page.waitForTimeout(1000);
+
+  assert(capturedBody !== null, 'No chat request captured');
+  assert(capturedBody.workspace_files !== undefined, 'workspace_files not in request body');
+  assert(capturedBody.workspace_files['embedded.txt'] === 'from_idb', 'IDB file not embedded');
+  await ctx.close();
+});
+
 // ═══════════════════════════════════════
-// AGENTIC PERSISTENCE (deep)
+// AGENTIC PERSISTENCE (IDB-first, embedded in chat)
 // ═══════════════════════════════════════
-await test('Agentic: tool-call persists file to IDB', async () => {
+await test('Agentic: tool-call persists file to IDB via files_snapshot', async () => {
   const { ctx, page } = await freshPage(browser);
 
-  // Intercept SSE to see what events arrive
-  const sseEvents: any[] = [];
+  // Intercept SSE to verify files_snapshot is in file_changed event
+  let hasFilesSnapshot = false;
   page.on('response', async (resp: any) => {
     if (resp.url().includes('/chat') && resp.status() === 200) {
       try {
@@ -220,7 +266,9 @@ await test('Agentic: tool-call persists file to IDB', async () => {
             if (line.startsWith('event: ')) eventType = line.slice(7);
             if (line.startsWith('data: ')) data += line.slice(6);
           }
-          if (eventType) sseEvents.push({ eventType, dataLen: data.length, hasSnapshot: data.includes('files_snapshot') });
+          if (eventType === 'file_changed' && data.includes('files_snapshot')) {
+            hasFilesSnapshot = true;
+          }
         }
       } catch {}
     }
@@ -236,10 +284,8 @@ await test('Agentic: tool-call persists file to IDB', async () => {
   }, { timeout: 90_000 });
   await page.waitForTimeout(2000);
 
-  // Debug: dump SSE events received
-  console.log('   [DEBUG] SSE events:', JSON.stringify(sseEvents));
+  assert(hasFilesSnapshot, 'file_changed event missing files_snapshot');
 
-  // Debug: dump ALL files in IDB for this conversation
   const allFiles = await page.evaluate(async () => {
     return new Promise<any[]>((resolve) => {
       const req = indexedDB.open('python-starter-workspace-db', 1);
@@ -249,16 +295,16 @@ await test('Agentic: tool-call persists file to IDB', async () => {
         const cid = localStorage.getItem('eo_conversation_id');
         const index = db.transaction('files', 'readonly').objectStore('files').index('byConversation');
         const getAll = index.getAll(cid);
-        getAll.onsuccess = () => resolve(getAll.result.map((r: any) => ({ filepath: r.filepath, storageKey: r.storageKey, size: r.content?.length })));
+        getAll.onsuccess = () => resolve(getAll.result.map((r: any) => ({ filepath: r.filepath, content: r.content })));
         getAll.onerror = () => resolve([]);
       };
       req.onerror = () => resolve([]);
     });
   });
-  console.log('   [DEBUG] IDB files for conversation:', JSON.stringify(allFiles));
 
-  const ok = allFiles.some((r: any) => r.filepath === 'tool_persist.txt');
-  assert(ok, 'File not in IDB after tool call');
+  const persistFile = allFiles.find((r: any) => r.filepath === 'tool_persist.txt');
+  assert(!!persistFile, 'File not in IDB after tool call');
+  assert(persistFile.content === 'tool_call_works', `Content wrong: "${persistFile.content}"`);
   await ctx.close();
 });
 

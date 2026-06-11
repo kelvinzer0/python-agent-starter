@@ -3,6 +3,9 @@ POST /workspace/sync-from-idb
 Frontend pushes its IDB files to backend before each chat message,
 so the sandbox initializes with the correct (latest) workspace state.
 
+Files are stored in a request-scoped cache (IDB is source of truth).
+The cache is read by load_workspace_files() / snapshot_workspace().
+
 Request body:
   {"conversation_id": "...", "files": {"path": "content", ...}}
 
@@ -28,17 +31,20 @@ async def handler(context: Any) -> dict[str, Any]:
     if not isinstance(files, dict):
         return {"error": "files must be a dict"}
 
-    # Save to KV so sandbox picks them up on next init
-    from .files import save_workspace_files, load_workspace_files
+    # Store in request-scoped cache (IDB is source of truth)
+    from .files import set_workspace_cache, get_active_tool_registry
 
-    try:
-        current = await load_workspace_files(context, skip_templates=True)
-        # Merge: IDB files take precedence
-        merged = dict(current)
-        merged.update(files)
-        await save_workspace_files(context, merged)
-        logger.log(f"[sync-from-idb] Merged {len(files)} IDB files into KV for {cid[:8]}")
-        return {"success": True, "count": len(files)}
-    except Exception as e:
-        logger.error(f"[sync-from-idb] Failed: {e}")
-        return {"error": str(e)}
+    set_workspace_cache(cid, files)
+    logger.log(f"[sync-from-idb] Cached {len(files)} files for {cid[:8]}")
+
+    # Also sync to sandbox if a session is active (so agent can read them)
+    tool_registry = get_active_tool_registry()
+    if tool_registry and len(files) > 0:
+        try:
+            from ..chat.index import sync_workspace_to_sandbox
+            await sync_workspace_to_sandbox(tool_registry, files)
+            logger.log(f"[sync-from-idb] Synced {len(files)} files to sandbox")
+        except Exception as e:
+            logger.log(f"[sync-from-idb] Sandbox sync skipped (no active session): {e}")
+
+    return {"success": True, "count": len(files)}

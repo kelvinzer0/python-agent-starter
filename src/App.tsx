@@ -4,8 +4,8 @@ import type { RawSseEvent, ToolDebugPayload, WorkspaceFile } from './api';
 import { 
   fetchConversationHistory, fetchModels, sendMessageStream, stopAgent,
   fetchWorkspaceFiles, readWorkspaceFile, writeWorkspaceFile, deleteWorkspaceFile,
-  fetchWorkspaceFileStatus, getAuthToken, setAuthToken, clearAuthToken,
-  fetchCurrentUser, syncIdbToBackend,
+  getAuthToken, setAuthToken, clearAuthToken,
+  fetchCurrentUser,
   type AuthUser
 } from './api';
 import type { ModelOption } from './api';
@@ -345,42 +345,33 @@ function AppInner() {
 
   const syncFilesFromCloud = useCallback(async (cid: string) => {
     try {
-      // Load IDB first (may have agent-modified files from onToolCalled)
+      // IDB is source of truth — load directly from IDB
       const idbFiles = await loadConversationFiles(cid);
       const idbHasFiles = Object.keys(idbFiles).length > 0;
 
-      // Load cloud files (may be stale templates if KV is broken)
-      const cloudFiles = await fetchWorkspaceFiles(cid);
-
       if (idbHasFiles) {
-        // IDB has files — use IDB as source of truth (agent-modified data)
-        // Only add cloud files that IDB doesn't have (new templates)
-        for (const f of cloudFiles) {
-          if (!idbFiles[f.name]) {
-            const content = await readWorkspaceFile(cid, f.name);
-            if (content) {
-              idbFiles[f.name] = content;
-              await saveFile({ conversationId: cid, filepath: f.name, content });
-            }
-          }
-        }
         const fileList = Object.entries(idbFiles).map(([name, content]) => ({
           name,
           size: content.length,
         }));
         setWorkspaceFiles(fileList);
-      } else if (cloudFiles.length > 0) {
-        // IDB empty, cloud has files — sync cloud to IDB
-        setWorkspaceFiles(cloudFiles);
-        for (const f of cloudFiles) {
-          const content = await readWorkspaceFile(cid, f.name);
-          if (content) {
-            await saveFile({ conversationId: cid, filepath: f.name, content });
+      } else {
+        // IDB empty for this conversation — load templates from backend
+        // (backend loads from filesystem when cache is empty)
+        const cloudFiles = await fetchWorkspaceFiles(cid);
+        if (cloudFiles.length > 0) {
+          setWorkspaceFiles(cloudFiles);
+          // Cache templates in IDB for offline access
+          for (const f of cloudFiles) {
+            const content = await readWorkspaceFile(cid, f.name);
+            if (content) {
+              await saveFile({ conversationId: cid, filepath: f.name, content });
+            }
           }
         }
       }
     } catch (err) {
-      console.error('Failed to sync files from cloud:', err);
+      console.error('Failed to sync files:', err);
       // On error, try IDB fallback
       try {
         const idbFiles = await loadConversationFiles(cid);
@@ -543,23 +534,9 @@ function AppInner() {
     });
   }, []);
 
-  // Poll workspace version for changes when not streaming
-  useEffect(() => {
-    if (loading) return;
-    const interval = setInterval(async () => {
-      const cid = conversationIdRef.current;
-      if (!cid) return;
-      try {
-        const status = await fetchWorkspaceFileStatus(cid);
-        if (status.version > knownVersionRef.current) {
-          knownVersionRef.current = status.version;
-          await syncFilesFromCloud(cid);
-        }
-      } catch {}
-    }, 5000);
-    return () => clearInterval(interval);
-  }, [loading, syncFilesFromCloud]);
-
+  // Workspace version polling removed — IDB is source of truth.
+  // File changes arrive via file_changed SSE events during streaming.
+  // The onFileChanged handler persists changes to IDB directly.
 
 
 
@@ -625,7 +602,7 @@ function AppInner() {
   }, []);
 
   const handleSend = useCallback(
-    (text: string) => {
+    async (text: string) => {
       if (loading) return;
 
       // Push user echo, kick the pending caret, then start a new turn.
@@ -678,15 +655,16 @@ function AppInner() {
       setPendingTurnId(turnId);
       setLoading(true);
 
-      // Sync IDB files to backend before chat so sandbox has latest workspace
+      // Load IDB files and embed in chat request (1 request, not 2)
       const cid = conversationIdRef.current;
-      loadConversationFiles(cid).then(idbFiles => {
-        if (Object.keys(idbFiles).length > 0) {
-          syncIdbToBackend(cid, idbFiles).catch(() => {});
-        }
-      }).catch(() => {});
+      let idbFiles: Record<string, string> = {};
+      try {
+        idbFiles = await loadConversationFiles(cid);
+      } catch {
+        // IDB read failure — chat proceeds without workspace files
+      }
 
-        const ctrl = sendMessageStream(
+      const ctrl = sendMessageStream(
           text,
           {
             onTextDelta: delta => {
@@ -861,9 +839,9 @@ function AppInner() {
                   size: (content as string).length,
                 })));
               } else {
-                console.log('[file_changed] no snapshot, falling back to cloud sync');
-                // Fallback: re-sync from cloud (merges with IDB)
-                syncFilesFromCloud(conversationIdRef.current);
+                console.log('[file_changed] no snapshot in event — IDB is source of truth, no sync needed');
+                // No snapshot in event — IDB already has the files from tool_debug or previous sync
+                // No need to re-sync from broken backend
               }
             },
 
@@ -939,6 +917,7 @@ function AppInner() {
           },
           conversationIdRef.current,
           selectedModelRef.current || undefined,
+          Object.keys(idbFiles).length > 0 ? idbFiles : undefined,
         );
 
         abortCtrlRef.current = ctrl;
