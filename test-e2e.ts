@@ -353,6 +353,138 @@ await test('API: /auth/me rejects no token', async () => {
   assert(data.error === 'Not authenticated', `Expected not authenticated, got: ${JSON.stringify(data)}`);
 });
 
+// ═══════════════════════════════════════════
+// AGENTIC PERSISTENCE TESTS (deep)
+// ═══════════════════════════════════════════
+await test('Agentic: tool-call file persists in IDB after chat', async () => {
+  const { ctx, page } = await freshPage(browser);
+  await register(page, 'agent1@test.com', 'Agent1', 'test123456');
+  await page.waitForTimeout(3000);
+
+  // Send message asking agent to create a file
+  const textarea = await page.waitForSelector('textarea', { timeout: 10_000 });
+  await textarea.fill('Use local_write_file to create a file called agent_created.txt with content "created by agent tool call"');
+  await page.keyboard.press('Enter');
+
+  // Wait for done event (up to 120s)
+  await page.waitForFunction(() => {
+    const text = document.body.innerText;
+    return text.includes('agent_created') || text.includes('Successfully');
+  }, { timeout: 120_000 });
+
+  // Wait a bit for IDB sync
+  await page.waitForTimeout(3000);
+
+  // Check IDB has the file
+  const hasFile = await page.evaluate(async () => {
+    return new Promise<boolean>((resolve) => {
+      const req = indexedDB.open('python-starter-workspace-db', 1);
+      req.onsuccess = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains('files')) { resolve(false); return; }
+        const tx = db.transaction('files', 'readonly');
+        const index = tx.objectStore('files').index('byConversation');
+        const cid = localStorage.getItem('eo_conversation_id');
+        const getAll = index.getAll(cid);
+        getAll.onsuccess = () => {
+          const files = getAll.result.map((r: any) => r.filepath);
+          resolve(files.includes('agent_created.txt'));
+        };
+        getAll.onerror = () => resolve(false);
+      };
+      req.onerror = () => resolve(false);
+    });
+  });
+
+  assert(hasFile, 'agent_created.txt not found in IDB after tool call');
+  await ctx.close();
+});
+
+await test('Agentic: file survives page reload after tool call', async () => {
+  const { ctx, page } = await freshPage(browser);
+  await register(page, 'agent2@test.com', 'Agent2', 'test123456');
+  await page.waitForTimeout(3000);
+
+  // Create file via agent
+  const textarea = await page.waitForSelector('textarea', { timeout: 10_000 });
+  await textarea.fill('Use local_write_file to create a file called reload_test.txt with content "survives reload"');
+  await page.keyboard.press('Enter');
+
+  await page.waitForFunction(() => {
+    const text = document.body.innerText;
+    return text.includes('reload_test') || text.includes('Successfully');
+  }, { timeout: 120_000 });
+  await page.waitForTimeout(3000);
+
+  // Reload page
+  await page.reload({ waitUntil: 'networkidle', timeout: TIMEOUT });
+  await page.waitForTimeout(5000);
+
+  // Check sidebar still shows the file
+  const sidebar = await page.textContent('aside');
+  assert(sidebar!.includes('reload_test.txt'), `reload_test.txt not in sidebar after reload: ${sidebar?.slice(0, 500)}`);
+
+  // Check IDB still has the file content
+  const content = await page.evaluate(async () => {
+    return new Promise<string | null>((resolve) => {
+      const req = indexedDB.open('python-starter-workspace-db', 1);
+      req.onsuccess = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains('files')) { resolve(null); return; }
+        const cid = localStorage.getItem('eo_conversation_id');
+        const key = `${cid}/reload_test.txt`;
+        const get = db.transaction('files', 'readonly').objectStore('files').get(key);
+        get.onsuccess = () => resolve(get.result?.content || null);
+        get.onerror = () => resolve(null);
+      };
+      req.onerror = () => resolve(null);
+    });
+  });
+
+  assert(content === 'survives reload', `IDB content wrong: "${content}"`);
+  await ctx.close();
+});
+
+await test('Agentic: multiple tool calls persist all files', async () => {
+  const { ctx, page } = await freshPage(browser);
+  await register(page, 'multi@test.com', 'MultiUser', 'test123456');
+  await page.waitForTimeout(3000);
+
+  // Create multiple files in one message
+  const textarea = await page.waitForSelector('textarea', { timeout: 10_000 });
+  await textarea.fill('Use local_write_file to create THREE files: file_a.txt with content "aaa", file_b.txt with content "bbb", file_c.txt with content "ccc". Create them one by one.');
+  await page.keyboard.press('Enter');
+
+  // Wait for completion (longer timeout for multiple tool calls)
+  await page.waitForFunction(() => {
+    const text = document.body.innerText;
+    return text.includes('file_a') && text.includes('file_b') && text.includes('file_c');
+  }, { timeout: 180_000 });
+  await page.waitForTimeout(3000);
+
+  // Check all 3 files in IDB
+  const files = await page.evaluate(async () => {
+    return new Promise<string[]>((resolve) => {
+      const req = indexedDB.open('python-starter-workspace-db', 1);
+      req.onsuccess = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains('files')) { resolve([]); return; }
+        const cid = localStorage.getItem('eo_conversation_id');
+        const index = db.transaction('files', 'readonly').objectStore('files').index('byConversation');
+        const getAll = index.getAll(cid);
+        getAll.onsuccess = () => resolve(getAll.result.map((r: any) => r.filepath));
+        getAll.onerror = () => resolve([]);
+      };
+      req.onerror = () => resolve([]);
+    });
+  });
+
+  assert(files.includes('file_a.txt'), `file_a.txt missing. Found: ${files}`);
+  assert(files.includes('file_b.txt'), `file_b.txt missing. Found: ${files}`);
+  assert(files.includes('file_c.txt'), `file_c.txt missing. Found: ${files}`);
+  await ctx.close();
+});
+
 await browser.close();
 
 console.log('\n═══════════════════════════════════════');

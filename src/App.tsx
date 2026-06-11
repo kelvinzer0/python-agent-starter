@@ -762,6 +762,35 @@ function AppInner() {
                   }
                   return prev;
                 });
+
+                // Persist file writes to IDB from tool call arguments
+                // (files_snapshot may be null when KV is broken)
+                if (payload.argumentsPreview && (
+                  toolName === 'local_write_file' ||
+                  toolName === 'sandbox_write_file'
+                )) {
+                  try {
+                    const args = JSON.parse(payload.argumentsPreview);
+                    const filename = args.filename || args.file || args.path;
+                    const content = args.content || args.data || args.text;
+                    if (filename && typeof content === 'string') {
+                      // Strip /workspace/ prefix if present
+                      const filepath = filename.replace(/^\/workspace\//, '');
+                      const cid = conversationIdRef.current;
+                      saveFile({ conversationId: cid, filepath, content }).catch(() => {});
+                      // Update sidebar file list
+                      setWorkspaceFiles(prev => {
+                        const exists = prev.some(f => f.name === filepath);
+                        if (exists) {
+                          return prev.map(f => f.name === filepath ? { name: filepath, size: content.length } : f);
+                        }
+                        return [...prev, { name: filepath, size: content.length }];
+                      });
+                    }
+                  } catch {
+                    // argumentsPreview is not valid JSON — skip
+                  }
+                }
               } else if (payload.phase === 'result') {
                 // Merge result-phase data and set status
                 const toolName = payload.tool;
