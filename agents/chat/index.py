@@ -30,8 +30,8 @@ import json
 import re
 import os
 import shlex
-import zipfile
 import io
+import zipfile
 import base64
 
 import httpx
@@ -239,7 +239,6 @@ async def sync_skills_to_sandbox(tool_registry: ToolRegistry) -> None:
                 zip_file.write(file_path, rel_path)
     
     zip_bytes = zip_buffer.getvalue()
-    import base64
     zip_b64 = base64.b64encode(zip_bytes).decode("utf-8")
     
     # 5. Write base64 zip and local manifest to sandbox /tmp
@@ -317,65 +316,21 @@ except Exception as e:
 
 
 async def sync_workspace_to_sandbox(tool_registry: ToolRegistry, files_dict: dict[str, str]) -> None:
-    """Initialize workspace files inside the stateless sandbox container under /workspace/ using zip transfer."""
-    # Clean up any existing workspace files in the sandbox to ensure deleted files are removed
+    """Push workspace files to sandbox /workspace/ using direct file writes + rsync."""
+    # Clean up any existing workspace files to ensure deleted files are removed
     await run_sandbox_command_system(tool_registry, "rm -rf /workspace && mkdir -p /workspace")
 
     if not files_dict:
         return
 
-    # 1. Package workspace files dict into a zip in memory
-    zip_buffer = io.BytesIO()
-    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
-        for filename, content in files_dict.items():
-            zip_file.writestr(filename, content)
-            
-    zip_bytes = zip_buffer.getvalue()
-    zip_b64 = base64.b64encode(zip_bytes).decode("utf-8")
-    
-    # 2. Write base64 zip to sandbox /tmp
-    await sandbox_write_file(tool_registry, "/tmp/workspace.zip.b64", zip_b64)
-    
-    # 3. Write extract script to /tmp/extract_workspace.py in sandbox
-    extract_script = """import base64
-import zipfile
-import os
-import shutil
+    # Write each file directly via platform tool
+    for filepath, content in files_dict.items():
+        parent_dir = os.path.dirname(f"/workspace/{filepath}")
+        if parent_dir and parent_dir != "/workspace":
+            await run_sandbox_command_system(tool_registry, f"mkdir -p {shlex.quote(parent_dir)}")
+        await sandbox_write_file(tool_registry, f"/workspace/{filepath}", content)
 
-try:
-    # Read and decode zip file
-    with open("/tmp/workspace.zip.b64", "r") as f:
-        b64_data = f.read()
-    zip_data = base64.b64decode(b64_data)
-    with open("/tmp/workspace.zip", "wb") as f:
-        f.write(zip_data)
-        
-    target_dir = "/workspace"
-    # Recreate target dir safely
-    if os.path.exists(target_dir):
-        shutil.rmtree(target_dir)
-    os.makedirs(target_dir, exist_ok=True)
-    
-    # Safe extraction with path traversal validation
-    with zipfile.ZipFile("/tmp/workspace.zip", "r") as z:
-        for member in z.infolist():
-            target_path = os.path.abspath(os.path.join(target_dir, member.filename))
-            if not target_path.startswith(os.path.abspath(target_dir)):
-                raise Exception(f"Directory traversal attempt detected: {member.filename}")
-            z.extract(member, target_dir)
-            
-    print("SUCCESS")
-except Exception as e:
-    print("ERROR:", str(e))
-"""
-    await sandbox_write_file(tool_registry, "/tmp/extract_workspace.py", extract_script)
-    
-    # 4. Execute extract script in sandbox
-    res = await run_sandbox_command_system(tool_registry, "python3 /tmp/extract_workspace.py")
-    logger.log(f"[workspace] Sync to sandbox extract result: {res}")
-    
-    # 5. Clean up temporary files
-    await run_sandbox_command_system(tool_registry, "rm -f /tmp/workspace.zip.b64 /tmp/workspace.zip /tmp/extract_workspace.py")
+    logger.log(f"[workspace] Synced {len(files_dict)} files to sandbox via direct write")
 
 
 async def ensure_sandbox_initialized(context: Any, tool_registry: ToolRegistry) -> None:
@@ -625,6 +580,9 @@ def build_system_prompt(files_dict: dict[str, str]) -> str:
             "Guide them through setting up IDENTITY.md, USER.md, and SOUL.md.\n"
             "Once onboarding/bootstrap is fully finished, you MUST use your file tools to DELETE `/workspace/BOOTSTRAP.md` so that the setup is complete.\n\n"
         )
+
+    return base_prompt + workspace_content
+
 
 async def run_subagent_loop(context: Any, role: str, objective: str, tool_registry: ToolRegistry) -> str:
     """Spawns a specialized sub-agent to perform an objective in a nested tool-calling loop."""
@@ -1059,7 +1017,6 @@ async def handler(context: Any) -> AsyncGenerator[str, None]:
             if filename in current_files:
                 del current_files[filename]
                 await save_workspace_files(context, current_files)
-                import shlex
                 await run_sandbox_command_system(tool_registry, f"rm -f /workspace/{shlex.quote(filename)}")
                 await run_sandbox_command_system(tool_registry, "mkdir -p /workspace_run && rsync -av --delete /workspace/ /workspace_run/")
                 tool_registry.local_fs_dirty = True
@@ -1154,7 +1111,6 @@ async def handler(context: Any) -> AsyncGenerator[str, None]:
 
         async def sandbox_write_file_tool(filename: str, content: str) -> str:
             path = filename if filename.startswith("/") else f"/workspace/{filename}"
-            import os
             parent_dir = os.path.dirname(path)
             if parent_dir and parent_dir != "/":
                 await run_sandbox_command_system(tool_registry, f"mkdir -p {parent_dir}")
@@ -1166,7 +1122,6 @@ async def handler(context: Any) -> AsyncGenerator[str, None]:
 
         async def sandbox_delete_file_tool(filename: str) -> str:
             path = filename if filename.startswith("/") else f"/workspace/{filename}"
-            import shlex
             await run_sandbox_command_system(tool_registry, f"rm -f {shlex.quote(path)}")
             await run_sandbox_command_system(tool_registry, "mkdir -p /workspace_run && rsync -av --delete /workspace/ /workspace_run/")
             return f"Successfully deleted file '{filename}' from sandbox container."
@@ -1469,16 +1424,8 @@ else:
                             ts.end()
 
                     # Ensure sandbox is still initialized before running tools
+                    # (This already conditionally syncs workspace if version is stale)
                     await ensure_sandbox_initialized(context, tool_registry)
-
-                    # ── Pre-toolcall sync: push workspace to sandbox before execution ──
-                    try:
-                        pre_files = await load_workspace_files(context)
-                        await sync_workspace_to_sandbox(tool_registry, pre_files)
-                        await run_sandbox_command_system(tool_registry, "mkdir -p /workspace_run && rsync -av --delete /workspace/ /workspace_run/")
-                        logger.log("[sync] Pre-toolcall: synced workspace to sandbox")
-                    except Exception as sync_err:
-                        logger.log(f"[sync] Pre-toolcall sync failed: {sync_err}")
 
                     # Execute wave in parallel
                     wave_tasks = [run_single_tool(tc, resolved_args) for tc, resolved_args in ready_calls_with_resolved]

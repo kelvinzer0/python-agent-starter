@@ -367,7 +367,7 @@ async def handler(context: Any) -> dict[str, Any]:
             tool_registry = _active_tool_registry
             if tool_registry:
                 try:
-                    from ..chat.index import run_sandbox_command_system
+                    from ..chat.index import run_sandbox_command_system, sandbox_write_file
                     await run_sandbox_command_system(tool_registry, f"rm -f /workspace/{shlex.quote(filename)}")
                     await run_sandbox_command_system(tool_registry, "mkdir -p /workspace_run && rsync -av --delete /workspace/ /workspace_run/")
                     new_version = await load_workspace_version(context)
