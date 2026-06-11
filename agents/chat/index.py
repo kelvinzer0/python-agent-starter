@@ -31,6 +31,7 @@ import re
 import os
 import shlex
 import io
+import tarfile
 import zipfile
 import base64
 
@@ -185,8 +186,8 @@ async def run_sandbox_command(tool_registry: ToolRegistry, command: str) -> str 
 
 async def sync_skills_to_sandbox(tool_registry: ToolRegistry) -> None:
     """Sync the project's local skills folder to the sandbox's /skills directory.
-    Uses manifest checking and base64-encoded zip file sync to make it fast, 
-    up-to-date, secure against path traversal, and robust against additions/deletions.
+    Uses manifest checking and base64-encoded tar archive sync to make it fast,
+    up-to-date, and robust against additions/deletions.
     """
     import hashlib
 
@@ -229,119 +230,73 @@ async def sync_skills_to_sandbox(tool_registry: ToolRegistry) -> None:
 
     logger.log("[skills] Manifest mismatch or missing. Syncing skills to sandbox...")
 
-    # 4. Package local skills directory into a zip in memory
-    zip_buffer = io.BytesIO()
-    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
+    # 4. Package local skills directory into an in-memory tar archive
+    tar_buffer = io.BytesIO()
+    with tarfile.open(fileobj=tar_buffer, mode="w") as tar:
         for rel_path in local_manifest.keys():
             file_path = skills_dir / rel_path
             if file_path.exists() and file_path.is_file():
-                zip_file.write(file_path, rel_path)
-    
-    zip_bytes = zip_buffer.getvalue()
-    zip_b64 = base64.b64encode(zip_bytes).decode("utf-8")
-    
-    # 5. Write base64 zip and local manifest to sandbox /tmp
-    logger.log("[skills] Writing files to sandbox...")
-    await sandbox_write_file(tool_registry, "/tmp/skills.zip.b64", zip_b64)
-    await sandbox_write_file(tool_registry, "/tmp/local_manifest.json", json.dumps(local_manifest))
-    
-    # 6. Write secure extract script to /tmp/extract.py in sandbox
-    extract_script = """import base64
-import zipfile
-import os
-import json
+                tar.add(file_path, arcname=rel_path)
 
-try:
-    # Read and decode zip file
-    with open("/tmp/skills.zip.b64", "r") as f:
-        b64_data = f.read()
-    zip_data = base64.b64decode(b64_data)
-    with open("/tmp/skills.zip", "wb") as f:
-        f.write(zip_data)
-        
-    # Read manifest
-    with open("/tmp/local_manifest.json", "r") as f:
-        local_manifest = json.load(f)
-        
-    target_dir = "/skills"
-    os.makedirs(target_dir, exist_ok=True)
-    
-    # Safe extraction with path traversal validation
-    with zipfile.ZipFile("/tmp/skills.zip", "r") as z:
-        for member in z.infolist():
-            # Resolve the absolute destination path
-            target_path = os.path.abspath(os.path.join(target_dir, member.filename))
-            # Check if target_path starts with target_dir to prevent path traversal
-            if not target_path.startswith(os.path.abspath(target_dir)):
-                raise Exception(f"Directory traversal attempt detected in zip: {member.filename}")
-            z.extract(member, target_dir)
-            
-    # Remove files that are not in the local manifest (handling deletions)
-    for root, dirs, files in os.walk(target_dir):
-        for file in files:
-            full_path = os.path.join(root, file)
-            rel_path = os.path.relpath(full_path, target_dir)
-            if rel_path == ".manifest.json":
-                continue
-            if rel_path not in local_manifest:
-                os.remove(full_path)
-                
-    # Remove empty directories
-    for root, dirs, files in os.walk(target_dir, topdown=False):
-        for d in dirs:
-            dir_path = os.path.join(root, d)
-            if not os.listdir(dir_path):
-                os.rmdir(dir_path)
-                
-    # Write the manifest file to /skills/.manifest.json
-    with open(os.path.join(target_dir, ".manifest.json"), "w") as f:
-        json.dump(local_manifest, f)
-        
-    print("SUCCESS")
-except Exception as e:
-    print("ERROR:", str(e))
-"""
-    await sandbox_write_file(tool_registry, "/tmp/extract.py", extract_script)
-    
-    # 7. Execute extract script in sandbox
+    tar_bytes = tar_buffer.getvalue()
+    tar_b64 = base64.b64encode(tar_bytes).decode("utf-8")
+
+    # 5. Write base64 tar to sandbox and extract with a single command
+    logger.log("[skills] Writing tar archive to sandbox...")
+    await sandbox_write_file(tool_registry, "/tmp/skills.tar.b64", tar_b64)
+
+    extract_cmd = (
+        'python3 -c "import base64; '
+        "open('/tmp/skills.tar','wb').write(base64.b64decode(open('/tmp/skills.tar.b64').read()))"
+        '" && mkdir -p /skills && tar -xf /tmp/skills.tar -C /skills '
+        '&& rm -f /tmp/skills.tar /tmp/skills.tar.b64'
+    )
     logger.log("[skills] Extracting skills inside sandbox...")
-    res = await run_sandbox_command_system(tool_registry, "python3 /tmp/extract.py")
+    res = await run_sandbox_command_system(tool_registry, extract_cmd)
     logger.log(f"[skills] Extract result: {res}")
-    
-    # 8. Clean up temporary files in sandbox
-    await run_sandbox_command_system(tool_registry, "rm -f /tmp/skills.zip.b64 /tmp/skills.zip /tmp/local_manifest.json /tmp/extract.py")
+
+    # 6. Write manifest file for future skip checks
+    await sandbox_write_file(tool_registry, "/skills/.manifest.json", json.dumps(local_manifest))
 
 
 
 
 async def sync_workspace_to_sandbox(tool_registry: ToolRegistry, files_dict: dict[str, str]) -> None:
-    """Push workspace files to sandbox /workspace/ using Python-based shell writes.
+    """Push workspace files to sandbox /workspace/ using a single tar archive transfer.
     
-    Uses base64+Python instead of platform file tool to avoid parameter-name
-    detection issues with internal (hidden) platform tools.
+    Packages all files into an in-memory tar archive, base64-encodes it, writes it
+    to the sandbox, then decodes and extracts in one command — faster and more
+    reliable than per-file base64+Python writes.
     """
-    # Clean up any existing workspace files to ensure deleted files are removed
-    await run_sandbox_command_system(tool_registry, "rm -rf /workspace && mkdir -p /workspace")
-
     if not files_dict:
+        await run_sandbox_command_system(tool_registry, "rm -rf /workspace && mkdir -p /workspace")
         return
 
-    # Write files via Python embedded in shell commands.
-    # Content is base64-encoded to avoid any quoting/escaping issues with arbitrary text.
-    for filepath, content in files_dict.items():
-        safe_path = f"/workspace/{filepath}"
-        content_b64 = base64.b64encode(content.encode("utf-8")).decode("ascii")
-        py_cmd = (
-            f"python3 -c \""
-            f"import base64, os; "
-            f"p='{safe_path}'; "
-            f"os.makedirs(os.path.dirname(p) or '.', exist_ok=True); "
-            f"open(p,'wb').write(base64.b64decode('{content_b64}'))"
-            f"\""
-        )
-        await run_sandbox_command_system(tool_registry, py_cmd)
+    # Build an in-memory tar archive from files_dict
+    tar_buffer = io.BytesIO()
+    with tarfile.open(fileobj=tar_buffer, mode="w") as tar:
+        for filepath, content in files_dict.items():
+            data = content.encode("utf-8")
+            info = tarfile.TarInfo(name=filepath)
+            info.size = len(data)
+            tar.addfile(info, io.BytesIO(data))
 
-    logger.log(f"[workspace] Synced {len(files_dict)} files to sandbox via Python writes")
+    tar_bytes = tar_buffer.getvalue()
+    tar_b64 = base64.b64encode(tar_bytes).decode("utf-8")
+
+    # Write base64 tar to sandbox and extract with a single command
+    await sandbox_write_file(tool_registry, "/tmp/workspace.tar.b64", tar_b64)
+
+    extract_cmd = (
+        'python3 -c "import base64; '
+        "open('/tmp/workspace.tar','wb').write(base64.b64decode(open('/tmp/workspace.tar.b64').read()))"
+        '" && rm -rf /workspace && mkdir -p /workspace '
+        '&& tar -xf /tmp/workspace.tar -C /workspace '
+        '&& rm -f /tmp/workspace.tar /tmp/workspace.tar.b64'
+    )
+    await run_sandbox_command_system(tool_registry, extract_cmd)
+
+    logger.log(f"[workspace] Synced {len(files_dict)} files to sandbox via tar archive")
 
 
 async def ensure_sandbox_initialized(context: Any, tool_registry: ToolRegistry) -> None:
@@ -373,42 +328,55 @@ async def ensure_sandbox_initialized(context: Any, tool_registry: ToolRegistry) 
 
 
 async def sync_workspace_from_sandbox(context: Any, tool_registry: ToolRegistry) -> dict[str, str]:
-    """Read updated workspace files from the sandbox and save them back to context.store KV."""
+    """Read updated workspace files from the sandbox using tar pipe and save them back to context.store KV.
+    
+    Uses `tar|base64` in the sandbox to produce a single encoded archive, then
+    decodes and extracts it in-memory on the host side. This replaces the previous
+    Python-list-script + JSON approach for better reliability with arbitrary file content.
+    
+    NOTE: If the workspace is very large, the base64 output from the sandbox command
+    may exceed the command output size limit and fail. In that case, consider chunking
+    or falling back to per-file reads.
+    """
     cid = context.conversation_id
 
-    # Read files from sandbox using a Python script that outputs JSON
-    list_script = """import os, json
-target = '/workspace'
-res = []
-if os.path.exists(target):
-    for root, dirs, files in os.walk(target):
-        for file in files:
-            full_path = os.path.join(root, file)
-            rel_path = os.path.relpath(full_path, target)
-            try:
-                with open(full_path, 'r', encoding='utf-8', errors='replace') as f:
-                    content = f.read()
-                res.append({"path": rel_path, "content": content})
-            except Exception:
-                pass
-print(json.dumps(res))
-"""
-    await sandbox_write_file(tool_registry, "/tmp/read_workspace.py", list_script)
-    output = await run_sandbox_command_system(tool_registry, "python3 /tmp/read_workspace.py")
-    await run_sandbox_command_system(tool_registry, "rm -f /tmp/read_workspace.py")
+    # Run tar|base64 in sandbox to produce the entire workspace as a single archive
+    output = await run_sandbox_command_system(tool_registry, "cd / && tar -cf - workspace | base64")
 
     if not output:
-        logger.log("[workspace] Failed to read workspace from sandbox")
+        logger.log("[workspace] Failed to read workspace from sandbox (empty output)")
         return {}
 
     try:
-        file_entries = json.loads(output.strip())
-        updated_files = {entry["path"]: entry["content"] for entry in file_entries}
+        tar_bytes = base64.b64decode(output.strip())
     except Exception as e:
-        logger.log(f"[workspace] Failed to parse workspace output: {e}")
+        logger.log(f"[workspace] Failed to decode base64 tar output: {e}")
         return {}
 
-    logger.log(f"[workspace] Read {len(updated_files)} files from sandbox via direct read")
+    # Extract tar in-memory and convert to files_dict
+    updated_files: dict[str, str] = {}
+    try:
+        tar_buffer = io.BytesIO(tar_bytes)
+        with tarfile.open(fileobj=tar_buffer, mode="r") as tar:
+            for member in tar.getmembers():
+                if member.isfile():
+                    # Strip the "workspace/" prefix from member names
+                    rel_path = member.name
+                    if rel_path.startswith("workspace/"):
+                        rel_path = rel_path[len("workspace/"):]
+                    elif rel_path.startswith("./workspace/"):
+                        rel_path = rel_path[len("./workspace/"):]
+                    if not rel_path:
+                        continue
+                    f = tar.extractfile(member)
+                    if f is not None:
+                        content = f.read().decode("utf-8", errors="replace")
+                        updated_files[rel_path] = content
+    except Exception as e:
+        logger.log(f"[workspace] Failed to extract tar archive: {e}")
+        return {}
+
+    logger.log(f"[workspace] Read {len(updated_files)} files from sandbox via tar pipe")
     try:
         await save_workspace_files(context, updated_files)
     except Exception as e:
