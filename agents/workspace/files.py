@@ -20,9 +20,18 @@ logger = create_logger("workspace_files")
 async def _load_workspace_raw(context: Any) -> dict[str, Any] | None:
     """Load raw workspace data from store. Returns the stored object (may be
     old-format plain dict or new-format {"version": N, "files": {...}})."""
-    cid = context.conversation_id
-    store = context.store
-    if not cid or not store:
+    store = getattr(context, "store", None)
+    if not store:
+        return None
+
+    # Resolve conversation_id dynamically from context or request body
+    cid = getattr(context, "conversation_id", None)
+    if not cid and hasattr(context, "request") and getattr(context.request, "body", None):
+        body = context.request.body or {}
+        if isinstance(body, dict):
+            cid = body.get("conversationId") or body.get("conversation_id")
+
+    if not cid:
         return None
 
     raw = None
@@ -95,8 +104,15 @@ async def load_workspace_files(context: Any) -> dict[str, str]:
     if files_dict:
         return files_dict
 
+    # Resolve conversation_id dynamically for logging
+    cid = getattr(context, "conversation_id", None)
+    if not cid and hasattr(context, "request") and getattr(context.request, "body", None):
+        body = context.request.body or {}
+        if isinstance(body, dict):
+            cid = body.get("conversationId") or body.get("conversation_id")
+
     # If both failed/empty, load templates
-    logger.log(f"[workspace] No files in store for {context.conversation_id}. Loading default templates.")
+    logger.log(f"[workspace] No files in store for {cid}. Loading default templates.")
     files_dict = {}
 
     project_root = Path(__file__).resolve().parent.parent.parent
@@ -122,9 +138,18 @@ async def save_workspace_files(context: Any, files_dict: dict[str, str]) -> None
     """Save workspace files to store (falls back to message history if KV is not supported).
     Stores {"version": N, "files": {...}} with an incrementing version number.
     """
-    cid = context.conversation_id
-    store = context.store
-    if not cid or not store:
+    store = getattr(context, "store", None)
+    if not store:
+        return
+
+    # Resolve conversation_id dynamically from context or request body
+    cid = getattr(context, "conversation_id", None)
+    if not cid and hasattr(context, "request") and getattr(context.request, "body", None):
+        body = context.request.body or {}
+        if isinstance(body, dict):
+            cid = body.get("conversationId") or body.get("conversation_id")
+
+    if not cid:
         return
 
     # Determine current version before saving
