@@ -16,13 +16,12 @@ from ..chat.index import load_workspace_files, save_workspace_files
 logger = create_logger("workspace_files")
 
 async def handler(context: Any) -> dict[str, Any]:
-    cid = context.conversation_id
+    body = context.request.body or {}
+    cid = body.get("conversationId") or body.get("conversation_id") or context.conversation_id
     logger.log(f"[workspace_files] conversation_id: {cid}")
 
     if not cid:
         return {"error": "conversation_id is required"}
-
-    body = context.request.body or {}
     action = body.get("action")
     filename = body.get("filename")
     content = body.get("content")

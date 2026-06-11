@@ -293,7 +293,7 @@ export async function fetchWorkspaceFiles(conversationId: string): Promise<Works
         'Content-Type': 'application/json',
         'makers-conversation-id': conversationId,
       },
-      body: JSON.stringify({ action: 'list' }),
+      body: JSON.stringify({ action: 'list', conversationId }),
     });
     if (!res.ok) return [];
     const data = await res.json() as { files?: WorkspaceFile[] };
@@ -312,7 +312,7 @@ export async function readWorkspaceFile(conversationId: string, filename: string
         'Content-Type': 'application/json',
         'makers-conversation-id': conversationId,
       },
-      body: JSON.stringify({ action: 'read', filename }),
+      body: JSON.stringify({ action: 'read', filename, conversationId }),
     });
     if (!res.ok) return '';
     const data = await res.json() as { content?: string };
@@ -331,7 +331,7 @@ export async function writeWorkspaceFile(conversationId: string, filename: strin
         'Content-Type': 'application/json',
         'makers-conversation-id': conversationId,
       },
-      body: JSON.stringify({ action: 'write', filename, content }),
+      body: JSON.stringify({ action: 'write', filename, content, conversationId }),
     });
     return res.ok;
   } catch {
@@ -348,7 +348,7 @@ export async function deleteWorkspaceFile(conversationId: string, filename: stri
         'Content-Type': 'application/json',
         'makers-conversation-id': conversationId,
       },
-      body: JSON.stringify({ action: 'delete', filename }),
+      body: JSON.stringify({ action: 'delete', filename, conversationId }),
     });
     return res.ok;
   } catch {

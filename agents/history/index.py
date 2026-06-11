@@ -93,7 +93,8 @@ def _normalize_message(item: Any) -> dict | None:
 
 async def handler(context: Any) -> dict[str, Any]:
     """Return conversation history messages."""
-    conversation_id = context.conversation_id
+    body = context.request.body or {}
+    conversation_id = body.get("conversationId") or body.get("conversation_id") or context.conversation_id
     logger.log(f"[history] conversation_id={conversation_id!r}")
 
     if not conversation_id:
