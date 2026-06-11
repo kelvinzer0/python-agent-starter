@@ -67,7 +67,9 @@ class ToolRegistry:
         if not system:
             # Intercept relative paths for filesystem tools and ensure commands run in /workspace
             name_lower = name.lower()
-            if "file" in name_lower or "fs" in name_lower:
+            # local_* tools use KV-store keys (plain relative filenames like "AGENTS.md"),
+            # NOT absolute sandbox paths — skip path normalization for them entirely.
+            if ("file" in name_lower or "fs" in name_lower) and not name_lower.startswith("local_"):
                 path_keys = ["path", "filepath", "file_path", "filename", "src", "dest", "target"]
                 for pk in path_keys:
                     if pk in args and isinstance(args[pk], str):
@@ -98,10 +100,13 @@ class ToolRegistry:
                                 cmd_val = cmd_val[len("cd /workspace &&"):]
                             
                             args[ck] = (
-                                "mkdir -p /workspace_run && "
-                                "rsync -av --delete /workspace/ /workspace_run/ && "
-                                f"((cd /workspace_run && {cmd_val}) ; "
-                                "rsync -av --delete /workspace_run/ /workspace/)"
+                                # Use rsync for workspace sync if available; fall back to cp -a.
+                                "(mkdir -p /workspace_run && "
+                                "(rsync -a --delete /workspace/ /workspace_run/ 2>/dev/null || "
+                                " (rm -rf /workspace_run && cp -a /workspace /workspace_run)) && "
+                                f"(cd /workspace_run && ({cmd_val})) ; "
+                                "(rsync -a --delete /workspace_run/ /workspace/ 2>/dev/null || "
+                                " true))"
                             )
             elif "interpreter" in name_lower or "code" in name_lower:
                 code_keys = ["code", "source", "script", "content"]
@@ -113,10 +118,20 @@ class ToolRegistry:
                             prefix = (
                                 "import os, subprocess, atexit\n"
                                 "os.makedirs('/workspace_run', exist_ok=True)\n"
-                                "subprocess.run(['rsync', '-av', '--delete', '/workspace/', '/workspace_run/'])\n"
+                                "try:\n"
+                                "    subprocess.run(['rsync', '-a', '--delete', '/workspace/', '/workspace_run/'],\n"
+                                "                   check=False, capture_output=True)\n"
+                                "except FileNotFoundError:\n"
+                                "    import shutil\n"
+                                "    if os.path.exists('/workspace') and not os.listdir('/workspace_run'):\n"
+                                "        shutil.copytree('/workspace', '/workspace_run', dirs_exist_ok=True)\n"
                                 "os.chdir('/workspace_run')\n"
                                 "def _sync_back():\n"
-                                "    subprocess.run(['rsync', '-av', '--delete', '/workspace_run/', '/workspace/'])\n"
+                                "    try:\n"
+                                "        subprocess.run(['rsync', '-a', '--delete', '/workspace_run/', '/workspace/'],\n"
+                                "                       check=False, capture_output=True)\n"
+                                "    except FileNotFoundError:\n"
+                                "        pass\n"
                                 "atexit.register(_sync_back)\n"
                             )
                             if "atexit.register(_sync_back)" not in code_val:

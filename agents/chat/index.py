@@ -997,28 +997,38 @@ async def handler(context: Any) -> AsyncGenerator[str, None]:
         # ── Local Workspace Tools ──
         tool_registry.local_fs_dirty = False
 
+        def _local_path(filename: str) -> str:
+            """Strip any leading /workspace/ prefix so the KV dict key is always relative."""
+            for prefix in ("/workspace/", "workspace/", "./workspace/"):
+                if filename.startswith(prefix):
+                    return filename[len(prefix):]
+            return filename.lstrip("./")
+
         async def local_read_file(filename: str) -> str:
+            filename = _local_path(filename)
             files_dict = await load_workspace_files(context)
             if filename in files_dict:
                 return files_dict[filename]
             return f"Error: File '{filename}' not found in local workspace."
 
         async def local_write_file(filename: str, content: str) -> str:
+            filename = _local_path(filename)
             current_files = await load_workspace_files(context)
             current_files[filename] = content
             await save_workspace_files(context, current_files)
             await sandbox_write_file(tool_registry, f"/workspace/{filename}", content)
-            await run_sandbox_command_system(tool_registry, "mkdir -p /workspace_run && rsync -av --delete /workspace/ /workspace_run/")
+            await run_sandbox_command_system(tool_registry, "mkdir -p /workspace_run && rsync -av --delete /workspace/ /workspace_run/ 2>/dev/null || true")
             tool_registry.local_fs_dirty = True
             return f"Successfully wrote file '{filename}' to local workspace."
 
         async def local_delete_file(filename: str) -> str:
+            filename = _local_path(filename)
             current_files = await load_workspace_files(context)
             if filename in current_files:
                 del current_files[filename]
                 await save_workspace_files(context, current_files)
                 await run_sandbox_command_system(tool_registry, f"rm -f /workspace/{shlex.quote(filename)}")
-                await run_sandbox_command_system(tool_registry, "mkdir -p /workspace_run && rsync -av --delete /workspace/ /workspace_run/")
+                await run_sandbox_command_system(tool_registry, "mkdir -p /workspace_run && rsync -av --delete /workspace/ /workspace_run/ 2>/dev/null || true")
                 tool_registry.local_fs_dirty = True
                 return f"Successfully deleted file '{filename}' from local workspace."
             return f"Error: File '{filename}' not found in local workspace."
