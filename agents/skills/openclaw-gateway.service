@@ -1,0 +1,19 @@
+[Unit]
+Description=OpenClaw Gateway (v2026.3.12)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/bin/node /usr/lib/node_modules/openclaw/dist/index.js gateway --port 18789
+Restart=always
+RestartSec=5
+TimeoutStopSec=30
+TimeoutStartSec=30
+SuccessExitStatus=0 143
+KillMode=control-group
+
+[Install]
+Environment="API_KEY="test""
+Environment=DISPLAY=:99
+WantedBy=default.target
+Environment=DISPLAY=:99

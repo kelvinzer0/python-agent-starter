@@ -30,6 +30,7 @@ import json
 import zipfile
 import io
 import re
+import os
 
 import httpx
 
@@ -174,6 +175,8 @@ async def sync_skills_to_sandbox(tool_registry: ToolRegistry) -> None:
     # 1. Resolve local skills directory
     project_root = Path(__file__).resolve().parent.parent.parent
     skills_dir = project_root / "skills"
+    if not skills_dir.exists():
+        skills_dir = Path(__file__).resolve().parent.parent / "skills"
     if not skills_dir.exists():
         skills_dir = Path.cwd() / "skills"
     if not skills_dir.exists():
@@ -323,6 +326,8 @@ async def load_workspace_files(context: Any) -> dict[str, str]:
     project_root = Path(__file__).resolve().parent.parent.parent
     workspace_dir = project_root / "workspace"
     if not workspace_dir.exists():
+        workspace_dir = Path(__file__).resolve().parent.parent / "workspace"
+    if not workspace_dir.exists():
         workspace_dir = Path.cwd() / "workspace"
         
     if workspace_dir.exists() and workspace_dir.is_dir():
@@ -339,8 +344,21 @@ async def load_workspace_files(context: Any) -> dict[str, str]:
 
 async def sync_workspace_to_sandbox(tool_registry: ToolRegistry, files_dict: dict[str, str]) -> None:
     """Initialize workspace files inside the stateless sandbox container under /workspace/."""
+    # Ensure root workspace directory is created in the sandbox
+    await run_sandbox_command(tool_registry, "mkdir -p /workspace")
+    
+    # Track directories we have already created to avoid duplicate mkdir commands
+    created_dirs = {"/workspace"}
+    
     for filename, content in files_dict.items():
         sandbox_path = f"/workspace/{filename}"
+        parent_dir = os.path.dirname(sandbox_path)
+        
+        # If the file is in a subdirectory, make sure that subdirectory is created first
+        if parent_dir not in created_dirs:
+            await run_sandbox_command(tool_registry, f"mkdir -p {parent_dir}")
+            created_dirs.add(parent_dir)
+            
         success = await sandbox_write_file(tool_registry, sandbox_path, content)
         if success:
             logger.log(f"[workspace] Synced {filename} to sandbox path {sandbox_path}")
@@ -405,6 +423,8 @@ def get_available_skills() -> list[str]:
     """Retrieve all subdirectory names inside the local project skills directory."""
     project_root = Path(__file__).resolve().parent.parent.parent
     skills_dir = project_root / "skills"
+    if not skills_dir.exists():
+        skills_dir = Path(__file__).resolve().parent.parent / "skills"
     if not skills_dir.exists():
         skills_dir = Path.cwd() / "skills"
         
