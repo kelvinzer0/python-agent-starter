@@ -32,8 +32,10 @@ async def _load_workspace_raw(context: Any) -> dict[str, Any] | None:
             cid = body.get("conversationId") or body.get("conversation_id")
 
     if not cid:
+        logger.log(f"[DEBUG _load_workspace_raw] Failed to resolve conversation ID! context={context}")
         return None
 
+    logger.log(f"[DEBUG _load_workspace_raw] cid={cid}, store_type={type(store)}")
     raw = None
 
     # Try standard KV first
@@ -44,8 +46,9 @@ async def _load_workspace_raw(context: Any) -> dict[str, Any] | None:
                 res = await res
             if res and isinstance(res, dict):
                 raw = res
+                logger.log(f"[DEBUG _load_workspace_raw] Successfully loaded raw dict from KV store")
     except Exception as e:
-        logger.log(f"[workspace] Failed to get files from KV store: {e}")
+        logger.log(f"[DEBUG _load_workspace_raw] Failed to get files from KV store: {e}")
 
     # Fallback: Load from conversation history
     if raw is None:
@@ -153,7 +156,10 @@ async def save_workspace_files(context: Any, files_dict: dict[str, str]) -> None
             cid = body.get("conversationId") or body.get("conversation_id")
 
     if not cid:
+        logger.log(f"[DEBUG save_workspace_files] Failed to resolve conversation ID! context={context}")
         return
+
+    logger.log(f"[DEBUG save_workspace_files] cid={cid}, store_type={type(store)}")
 
     # Determine current version before saving
     current_version = await load_workspace_version(context)
@@ -175,7 +181,7 @@ async def save_workspace_files(context: Any, files_dict: dict[str, str]) -> None
             logger.log(f"[workspace] Saved workspace v{new_version} to KV store for {cid}")
             return
     except Exception as e:
-        logger.log(f"[workspace] KV store save failed, falling back to messages: {e}")
+        logger.log(f"[DEBUG save_workspace_files] KV store save failed, falling back to messages: {e}")
 
     # Fallback: Save as a system message in conversation history
     try:
