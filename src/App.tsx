@@ -817,11 +817,14 @@ function AppInner() {
                     const args = JSON.parse(payload.argumentsPreview);
                     const filename = args.filename || args.file || args.path;
                     const content = args.content || args.data || args.text;
+                    console.log('[tool_debug] call phase, tool:', toolName, 'filename:', filename, 'content len:', content?.length);
                     if (filename && typeof content === 'string') {
                       // Strip /workspace/ prefix if present
                       const filepath = filename.replace(/^\/workspace\//, '');
                       const cid = conversationIdRef.current;
-                      saveFile({ conversationId: cid, filepath, content }).catch(() => {});
+                      saveFile({ conversationId: cid, filepath, content })
+                        .then(() => { console.log('[tool_debug] IDB saved:', filepath); })
+                        .catch(err => { console.warn('[tool_debug] IDB FAILED:', filepath, err); });
                       // Update sidebar file list
                       setWorkspaceFiles(prev => {
                         const exists = prev.some(f => f.name === filepath);
@@ -876,11 +879,17 @@ function AppInner() {
               // ALWAYS process — not gated by version check — because we need
               // the files in IDB for reload persistence regardless of version.
               const snapshot = (payload as any).files_snapshot;
-              if (snapshot && typeof snapshot === 'object' && Object.keys(snapshot).length > 0) {
+              const snapshotKeys = snapshot ? Object.keys(snapshot) : [];
+              console.log('[file_changed] received, version:', payload.version, 'snapshot keys:', snapshotKeys, 'cid:', conversationIdRef.current?.slice(0, 8));
+              if (snapshot && typeof snapshot === 'object' && snapshotKeys.length > 0) {
                 const cid = conversationIdRef.current;
+                const savePromises: Promise<any>[] = [];
                 for (const [filepath, content] of Object.entries(snapshot)) {
                   if (typeof content === 'string') {
-                    saveFile({ conversationId: cid, filepath, content }).catch(() => {});
+                    const p = saveFile({ conversationId: cid, filepath, content })
+                      .then(() => { console.log('[file_changed] IDB saved:', filepath); })
+                      .catch(err => { console.warn('[file_changed] IDB FAILED:', filepath, err); });
+                    savePromises.push(p);
                   }
                 }
                 // Update sidebar
@@ -889,6 +898,7 @@ function AppInner() {
                   size: (content as string).length,
                 })));
               } else {
+                console.log('[file_changed] no snapshot, falling back to cloud sync');
                 // Fallback: re-sync from cloud (merges with IDB)
                 syncFilesFromCloud(conversationIdRef.current);
               }

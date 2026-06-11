@@ -1,7 +1,7 @@
 import { chromium } from 'playwright';
 
 const BASE = 'https://aikuprojgs.edgeone.dev';
-const TIMEOUT = 120_000;
+const TIMEOUT = 60_000;
 
 let passed = 0;
 let failed = 0;
@@ -26,19 +26,19 @@ async function freshPage(browser: any) {
   const ctx = await browser.newContext();
   const page = await ctx.newPage();
   await page.goto(BASE, { waitUntil: 'networkidle', timeout: TIMEOUT });
-  await page.waitForSelector('input[type="email"]', { timeout: 15_000 });
+  await page.waitForSelector('input[type="email"]', { timeout: 8_000 });
   return { ctx, page };
 }
 
 async function register(page: any, email: string, username: string, password: string) {
   const toggle = page.getByText("Don't have an account? Register");
   await toggle.click();
-  await page.waitForTimeout(300);
+  await page.waitForTimeout(200);
   await page.locator('input[type="email"]').fill(email);
   await page.locator('input[placeholder="Your name"]').fill(username);
   await page.locator('input[type="password"]').fill(password);
   await page.locator('button[type="submit"]').click();
-  await page.waitForFunction(() => !document.querySelector('input[type="email"]'), { timeout: 10_000 });
+  await page.waitForFunction(() => !document.querySelector('input[type="email"]'), { timeout: 8_000 });
 }
 
 const browser = await chromium.launch({ headless: true });
@@ -58,7 +58,7 @@ await test('Auth: persists reload', async () => {
   const { ctx, page } = await freshPage(browser);
   await register(page, 'pw2@test.com', 'PW2', 'test123456');
   await page.reload({ waitUntil: 'networkidle', timeout: TIMEOUT });
-  await page.waitForTimeout(2000);
+  await page.waitForTimeout(500);
   assert(!(await page.$('input[type="email"]')), 'Modal shown after reload');
   await ctx.close();
 });
@@ -79,7 +79,7 @@ await test('Auth: wrong password', async () => {
   await page.locator('input[type="email"]').fill('pw4@test.com');
   await page.locator('input[type="password"]').fill('wrong');
   await page.locator('button[type="submit"]').click();
-  await page.waitForTimeout(1500);
+  await page.waitForTimeout(800);
   assert(await page.$('input[type="email"]'), 'Should show error');
   await ctx.close();
 });
@@ -91,12 +91,12 @@ await test('Auth: duplicate email', async () => {
   await page.waitForSelector('input[type="email"]', { timeout: 5_000 });
   const toggle = page.getByText("Don't have an account? Register");
   await toggle.click();
-  await page.waitForTimeout(300);
+  await page.waitForTimeout(200);
   await page.locator('input[type="email"]').fill('pw5@test.com');
   await page.locator('input[placeholder="Your name"]').fill('PW5b');
   await page.locator('input[type="password"]').fill('pass123456');
   await page.locator('button[type="submit"]').click();
-  await page.waitForTimeout(2000);
+  await page.waitForTimeout(1000);
   assert(await page.$('input[type="email"]'), 'Should reject duplicate');
   await ctx.close();
 });
@@ -107,7 +107,7 @@ await test('Auth: duplicate email', async () => {
 await test('Workspace: templates from backend', async () => {
   const { ctx, page } = await freshPage(browser);
   await register(page, 'ws1@test.com', 'WS1', 'test123456');
-  await page.waitForTimeout(4000);
+  await page.waitForTimeout(2000);
   const sidebar = await page.textContent('aside');
   assert(sidebar!.includes('IDENTITY.md'), 'IDENTITY.md missing');
   await ctx.close();
@@ -116,7 +116,7 @@ await test('Workspace: templates from backend', async () => {
 await test('Workspace: IDB persists reload', async () => {
   const { ctx, page } = await freshPage(browser);
   await register(page, 'ws2@test.com', 'WS2', 'test123456');
-  await page.waitForTimeout(2000);
+  await page.waitForTimeout(1000);
   await page.evaluate(async () => {
     return new Promise<void>((resolve) => {
       const req = indexedDB.open('python-starter-workspace-db', 1);
@@ -137,7 +137,7 @@ await test('Workspace: IDB persists reload', async () => {
     });
   });
   await page.reload({ waitUntil: 'networkidle', timeout: TIMEOUT });
-  await page.waitForTimeout(2000);
+  await page.waitForTimeout(500);
   const ok = await page.evaluate(async () => {
     return new Promise<boolean>((resolve) => {
       const req = indexedDB.open('python-starter-workspace-db', 1);
@@ -158,7 +158,7 @@ await test('Workspace: IDB persists reload', async () => {
 await test('Workspace: conversations isolated', async () => {
   const { ctx, page } = await freshPage(browser);
   await register(page, 'ws3@test.com', 'WS3', 'test123456');
-  await page.waitForTimeout(2000);
+  await page.waitForTimeout(1000);
   const cid1 = await page.evaluate(() => localStorage.getItem('eo_conversation_id'));
   await page.evaluate(async (cid: string) => {
     return new Promise<void>((resolve) => {
@@ -179,7 +179,7 @@ await test('Workspace: conversations isolated', async () => {
     });
   }, cid1!);
   await page.locator('button:has-text("New Chat")').first().click();
-  await page.waitForTimeout(2000);
+  await page.waitForTimeout(1000);
   const cid2 = await page.evaluate(() => localStorage.getItem('eo_conversation_id'));
   assert(cid1 !== cid2, 'Same CID');
   const has = await page.evaluate(async (cid: string) => {
@@ -204,30 +204,60 @@ await test('Workspace: conversations isolated', async () => {
 // ═══════════════════════════════════════
 await test('Agentic: tool-call persists file to IDB', async () => {
   const { ctx, page } = await freshPage(browser);
+
+  // Intercept SSE to see what events arrive
+  const sseEvents: any[] = [];
+  page.on('response', async (resp: any) => {
+    if (resp.url().includes('/chat') && resp.status() === 200) {
+      try {
+        const body = await resp.text();
+        const events = body.split('\n\n').filter((s: string) => s.trim());
+        for (const ev of events) {
+          const lines = ev.split('\n');
+          let eventType = '';
+          let data = '';
+          for (const line of lines) {
+            if (line.startsWith('event: ')) eventType = line.slice(7);
+            if (line.startsWith('data: ')) data += line.slice(6);
+          }
+          if (eventType) sseEvents.push({ eventType, dataLen: data.length, hasSnapshot: data.includes('files_snapshot') });
+        }
+      } catch {}
+    }
+  });
+
   await register(page, 'ag1@test.com', 'Ag1', 'test123456');
-  await page.waitForTimeout(3000);
-  const ta = await page.waitForSelector('textarea', { timeout: 10_000 });
+  await page.waitForTimeout(2000);
+  const ta = await page.waitForSelector('textarea', { timeout: 8_000 });
   await ta.fill('Use local_write_file to create a file called tool_persist.txt with content "tool_call_works"');
   await page.keyboard.press('Enter');
   await page.waitForFunction(() => {
     return document.body.innerText.includes('tool_persist') || document.body.innerText.includes('Successfully');
-  }, { timeout: 120_000 });
-  await page.waitForTimeout(3000);
-  const ok = await page.evaluate(async () => {
-    return new Promise<boolean>((resolve) => {
+  }, { timeout: 90_000 });
+  await page.waitForTimeout(2000);
+
+  // Debug: dump SSE events received
+  console.log('   [DEBUG] SSE events:', JSON.stringify(sseEvents));
+
+  // Debug: dump ALL files in IDB for this conversation
+  const allFiles = await page.evaluate(async () => {
+    return new Promise<any[]>((resolve) => {
       const req = indexedDB.open('python-starter-workspace-db', 1);
       req.onsuccess = () => {
         const db = req.result;
-        if (!db.objectStoreNames.contains('files')) { resolve(false); return; }
+        if (!db.objectStoreNames.contains('files')) { resolve([]); return; }
         const cid = localStorage.getItem('eo_conversation_id');
         const index = db.transaction('files', 'readonly').objectStore('files').index('byConversation');
         const getAll = index.getAll(cid);
-        getAll.onsuccess = () => resolve(getAll.result.some((r: any) => r.filepath === 'tool_persist.txt'));
-        getAll.onerror = () => resolve(false);
+        getAll.onsuccess = () => resolve(getAll.result.map((r: any) => ({ filepath: r.filepath, storageKey: r.storageKey, size: r.content?.length })));
+        getAll.onerror = () => resolve([]);
       };
-      req.onerror = () => resolve(false);
+      req.onerror = () => resolve([]);
     });
   });
+  console.log('   [DEBUG] IDB files for conversation:', JSON.stringify(allFiles));
+
+  const ok = allFiles.some((r: any) => r.filepath === 'tool_persist.txt');
   assert(ok, 'File not in IDB after tool call');
   await ctx.close();
 });
@@ -235,18 +265,18 @@ await test('Agentic: tool-call persists file to IDB', async () => {
 await test('Agentic: file survives reload after tool call', async () => {
   const { ctx, page } = await freshPage(browser);
   await register(page, 'ag2@test.com', 'Ag2', 'test123456');
-  await page.waitForTimeout(3000);
-  const ta = await page.waitForSelector('textarea', { timeout: 10_000 });
+  await page.waitForTimeout(2000);
+  const ta = await page.waitForSelector('textarea', { timeout: 8_000 });
   await ta.fill('Use local_write_file to create a file called survive_reload.txt with content "i_survive"');
   await page.keyboard.press('Enter');
   await page.waitForFunction(() => {
     return document.body.innerText.includes('survive_reload') || document.body.innerText.includes('Successfully');
-  }, { timeout: 120_000 });
-  await page.waitForTimeout(3000);
+  }, { timeout: 90_000 });
+  await page.waitForTimeout(1000);
 
   // Reload
   await page.reload({ waitUntil: 'networkidle', timeout: TIMEOUT });
-  await page.waitForTimeout(5000);
+  await page.waitForTimeout(2000);
 
   // Check sidebar
   const sidebar = await page.textContent('aside');
@@ -274,15 +304,15 @@ await test('Agentic: file survives reload after tool call', async () => {
 await test('Agentic: multiple tool calls persist all files', async () => {
   const { ctx, page } = await freshPage(browser);
   await register(page, 'ag3@test.com', 'Ag3', 'test123456');
-  await page.waitForTimeout(3000);
-  const ta = await page.waitForSelector('textarea', { timeout: 10_000 });
+  await page.waitForTimeout(2000);
+  const ta = await page.waitForSelector('textarea', { timeout: 8_000 });
   await ta.fill('Use local_write_file to create these files one by one: multi_a.txt content "aaa", multi_b.txt content "bbb", multi_c.txt content "ccc"');
   await page.keyboard.press('Enter');
   await page.waitForFunction(() => {
     const t = document.body.innerText;
     return t.includes('multi_a') && t.includes('multi_b') && t.includes('multi_c');
-  }, { timeout: 180_000 });
-  await page.waitForTimeout(3000);
+  }, { timeout: 120_000 });
+  await page.waitForTimeout(1000);
 
   const files = await page.evaluate(async () => {
     return new Promise<string[]>((resolve) => {
