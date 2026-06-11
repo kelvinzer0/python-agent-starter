@@ -166,15 +166,12 @@ async def run_sandbox_command(tool_registry: ToolRegistry, command: str) -> str 
 
 async def sync_skills_to_sandbox(tool_registry: ToolRegistry) -> None:
     """Sync the project's local skills folder to the sandbox's /skills directory.
-    Uses base64-encoded zip file sync to make it fast and support subdirectories.
+    Uses manifest checking and base64-encoded zip file sync to make it fast, 
+    up-to-date, secure against path traversal, and robust against additions/deletions.
     """
-    # 1. Check if SKILL.md already exists in sandbox (e.g. /skills/onboard/SKILL.md)
-    exists = await sandbox_read_file(tool_registry, "/skills/onboard/SKILL.md")
-    if exists is not None:
-        logger.log("[skills] Skills already exist in sandbox. Skipping sync.")
-        return
+    import hashlib
 
-    # 2. Package local skills directory into a zip in memory
+    # 1. Resolve local skills directory
     project_root = Path(__file__).resolve().parent.parent.parent
     skills_dir = project_root / "skills"
     if not skills_dir.exists():
@@ -183,53 +180,116 @@ async def sync_skills_to_sandbox(tool_registry: ToolRegistry) -> None:
         logger.log("[skills] Local skills folder not found!")
         return
 
-    logger.log("[skills] Packaging skills folder...")
+    # 2. Compute local manifest (file path -> MD5 hash)
+    local_manifest = {}
+    for file_path in skills_dir.glob("**/*"):
+        if file_path.is_file():
+            if "node_modules" in file_path.parts:
+                continue
+            relative_path = str(file_path.relative_to(skills_dir))
+            try:
+                content = file_path.read_bytes()
+                local_manifest[relative_path] = hashlib.md5(content).hexdigest()
+            except Exception:
+                pass
+
+    # 3. Read sandbox manifest and check if it matches
+    sandbox_manifest_str = await sandbox_read_file(tool_registry, "/skills/.manifest.json")
+    sandbox_manifest = None
+    if sandbox_manifest_str is not None:
+        try:
+            sandbox_manifest = json.loads(sandbox_manifest_str)
+        except Exception:
+            pass
+
+    if sandbox_manifest == local_manifest:
+        logger.log("[skills] Skills in sandbox are up-to-date. Skipping sync.")
+        return
+
+    logger.log("[skills] Manifest mismatch or missing. Syncing skills to sandbox...")
+
+    # 4. Package local skills directory into a zip in memory
     zip_buffer = io.BytesIO()
     with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
-        for file_path in skills_dir.glob("**/*"):
-            if file_path.is_file():
-                if "node_modules" in file_path.parts:
-                    continue
-                relative_path = file_path.relative_to(skills_dir)
-                zip_file.write(file_path, relative_path)
+        for rel_path in local_manifest.keys():
+            file_path = skills_dir / rel_path
+            if file_path.exists() and file_path.is_file():
+                zip_file.write(file_path, rel_path)
     
     zip_bytes = zip_buffer.getvalue()
     import base64
     zip_b64 = base64.b64encode(zip_bytes).decode("utf-8")
     
-    # 3. Write base64 content to /tmp/skills.zip.b64 in sandbox
-    logger.log("[skills] Writing b64 zip to sandbox...")
+    # 5. Write base64 zip and local manifest to sandbox /tmp
+    logger.log("[skills] Writing files to sandbox...")
     await sandbox_write_file(tool_registry, "/tmp/skills.zip.b64", zip_b64)
+    await sandbox_write_file(tool_registry, "/tmp/local_manifest.json", json.dumps(local_manifest))
     
-    # 4. Write extract script to /tmp/extract.py in sandbox
-    extract_script = """
-import base64
+    # 6. Write secure extract script to /tmp/extract.py in sandbox
+    extract_script = """import base64
 import zipfile
 import os
+import json
 
 try:
+    # Read and decode zip file
     with open("/tmp/skills.zip.b64", "r") as f:
         b64_data = f.read()
     zip_data = base64.b64decode(b64_data)
     with open("/tmp/skills.zip", "wb") as f:
         f.write(zip_data)
         
-    os.makedirs("/skills", exist_ok=True)
+    # Read manifest
+    with open("/tmp/local_manifest.json", "r") as f:
+        local_manifest = json.load(f)
+        
+    target_dir = "/skills"
+    os.makedirs(target_dir, exist_ok=True)
+    
+    # Safe extraction with path traversal validation
     with zipfile.ZipFile("/tmp/skills.zip", "r") as z:
-        z.extractall("/skills")
+        for member in z.infolist():
+            # Resolve the absolute destination path
+            target_path = os.path.abspath(os.path.join(target_dir, member.filename))
+            # Check if target_path starts with target_dir to prevent path traversal
+            if not target_path.startswith(os.path.abspath(target_dir)):
+                raise Exception(f"Directory traversal attempt detected in zip: {member.filename}")
+            z.extract(member, target_dir)
+            
+    # Remove files that are not in the local manifest (handling deletions)
+    for root, dirs, files in os.walk(target_dir):
+        for file in files:
+            full_path = os.path.join(root, file)
+            rel_path = os.path.relpath(full_path, target_dir)
+            if rel_path == ".manifest.json":
+                continue
+            if rel_path not in local_manifest:
+                os.remove(full_path)
+                
+    # Remove empty directories
+    for root, dirs, files in os.walk(target_dir, topdown=False):
+        for d in dirs:
+            dir_path = os.path.join(root, d)
+            if not os.listdir(dir_path):
+                os.rmdir(dir_path)
+                
+    # Write the manifest file to /skills/.manifest.json
+    with open(os.path.join(target_dir, ".manifest.json"), "w") as f:
+        json.dump(local_manifest, f)
+        
     print("SUCCESS")
 except Exception as e:
     print("ERROR:", str(e))
 """
     await sandbox_write_file(tool_registry, "/tmp/extract.py", extract_script)
     
-    # 5. Execute extract script in sandbox
-    logger.log("[skills] Extracting skills zip inside sandbox...")
+    # 7. Execute extract script in sandbox
+    logger.log("[skills] Extracting skills inside sandbox...")
     res = await run_sandbox_command(tool_registry, "python3 /tmp/extract.py")
     logger.log(f"[skills] Extract result: {res}")
     
-    # 6. Clean up temporary files in sandbox
-    await run_sandbox_command(tool_registry, "rm -f /tmp/skills.zip.b64 /tmp/skills.zip /tmp/extract.py")
+    # 8. Clean up temporary files in sandbox
+    await run_sandbox_command(tool_registry, "rm -f /tmp/skills.zip.b64 /tmp/skills.zip /tmp/local_manifest.json /tmp/extract.py")
 
 
 # ── Workspace Persistence & Synchronization ──
@@ -266,21 +326,12 @@ async def load_workspace_files(context: Any) -> dict[str, str]:
         workspace_dir = Path.cwd() / "workspace"
         
     if workspace_dir.exists() and workspace_dir.is_dir():
-        filenames = [
-            "BOOTSTRAP.md",
-            "IDENTITY.md",
-            "USER.md",
-            "SOUL.md",
-            "AGENTS.md",
-            "TOOLS.md",
-            "HEARTBEAT.md"
-        ]
-        for name in filenames:
-            filepath = workspace_dir / name
-            if filepath.exists() and filepath.is_file():
+        for filepath in workspace_dir.glob("**/*"):
+            if filepath.is_file():
+                rel_path = str(filepath.relative_to(workspace_dir))
                 try:
                     content = filepath.read_text(encoding="utf-8").strip()
-                    files_dict[name] = content
+                    files_dict[rel_path] = content
                 except Exception:
                     pass
     return files_dict
@@ -303,27 +354,37 @@ async def sync_workspace_from_sandbox(context: Any, tool_registry: ToolRegistry)
     store = context.store
     store_key = f"workspace_files_{cid}"
     
-    filenames = [
-        "BOOTSTRAP.md",
-        "IDENTITY.md",
-        "USER.md",
-        "SOUL.md",
-        "AGENTS.md",
-        "TOOLS.md",
-        "HEARTBEAT.md"
-    ]
+    list_script = """import os, json
+res = {}
+target = '/workspace'
+if os.path.exists(target):
+    for root, dirs, files in os.walk(target):
+        for file in files:
+            full_path = os.path.join(root, file)
+            rel_path = os.path.relpath(full_path, target)
+            try:
+                with open(full_path, 'r', encoding='utf-8') as f:
+                    res[rel_path] = f.read()
+            except Exception:
+                pass
+print(json.dumps(res))
+"""
+    await sandbox_write_file(tool_registry, "/tmp/list_workspace.py", list_script)
+    output = await run_sandbox_command(tool_registry, "python3 /tmp/list_workspace.py")
+    await run_sandbox_command(tool_registry, "rm -f /tmp/list_workspace.py")
+
+    if not output:
+        logger.log("[workspace] Failed to list workspace files in sandbox")
+        return
+
+    try:
+        updated_files = json.loads(output)
+    except Exception as e:
+        logger.log(f"[workspace] Failed to parse listed workspace JSON: {e}. Output was: {output[:500]}")
+        return
+
+    logger.log(f"[workspace] Read {len(updated_files)} files from sandbox workspace")
     
-    updated_files = {}
-    for name in filenames:
-        sandbox_path = f"/workspace/{name}"
-        content = await sandbox_read_file(tool_registry, sandbox_path)
-        if content is not None:
-            updated_files[name] = content
-            logger.log(f"[workspace] Read updated {name} from sandbox")
-        else:
-            # File missing = deleted (e.g. BOOTSTRAP.md deleted by agent)
-            logger.log(f"[workspace] {name} is missing in sandbox (deleted or not created)")
-            
     try:
         if hasattr(store, "put"):
             res = store.put(store_key, updated_files)
@@ -337,6 +398,7 @@ async def sync_workspace_from_sandbox(context: Any, tool_registry: ToolRegistry)
             logger.log(f"[workspace] Saved updated workspace back to store for {cid}")
     except Exception as e:
         logger.log(f"[workspace] Failed to save updated workspace to store: {e}")
+
 
 
 def get_available_skills() -> list[str]:
@@ -872,6 +934,7 @@ async def handler(context: Any) -> AsyncGenerator[str, None]:
 
     assistant_content = ""
     cancelled = False
+    success = False
 
     try:
         async with httpx.AsyncClient(
@@ -1068,6 +1131,7 @@ async def handler(context: Any) -> AsyncGenerator[str, None]:
                         "tool_call_id": tc["id"],
                         "content": tool_result,
                     })
+            success = True
 
     except (httpx.HTTPError, httpx.StreamError) as e:
         logger.error(f"[handler] httpx error: {type(e).__name__}: {e}")
@@ -1104,7 +1168,7 @@ async def handler(context: Any) -> AsyncGenerator[str, None]:
             save_span.end()
 
     # ── Workspace: save updated files back to context.store KV ──
-    if 'tool_registry' in locals() and tool_registry:
+    if success and 'tool_registry' in locals() and tool_registry:
         await sync_workspace_from_sandbox(context, tool_registry)
 
     yield sse_event("done", {"stopped": cancelled})
