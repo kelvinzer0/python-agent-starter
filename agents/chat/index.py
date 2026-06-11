@@ -379,17 +379,32 @@ except Exception as e:
 
 async def ensure_sandbox_initialized(context: Any, tool_registry: ToolRegistry) -> None:
     """Check if the sandbox container has lost its workspace or skills, and reinitialize on the fly if needed."""
-    res = await run_sandbox_command_system(tool_registry, "ls -la /tmp/.sandbox_init 2>/dev/null")
-    if not res or "/tmp/.sandbox_init" not in res:
-        logger.log("[sandbox] Sandbox reset or sentinel missing. Reinitializing workspace and skills...")
-        # Re-sync workspace
+    init_res = await run_sandbox_command_system(tool_registry, "cat /tmp/.sandbox_init 2>/dev/null")
+    
+    current_version = await load_workspace_version(context)
+    sandbox_version_str = await sandbox_read_file(tool_registry, "/tmp/.workspace_version")
+    try:
+        sandbox_version = int(sandbox_version_str.strip()) if sandbox_version_str else -1
+    except Exception:
+        sandbox_version = -1
+
+    needs_workspace_sync = (not init_res or "/tmp/.sandbox_init" not in init_res or sandbox_version != current_version)
+
+    if needs_workspace_sync:
+        logger.log(f"[sandbox] Workspace sync needed (sandbox version: {sandbox_version}, cloud version: {current_version}). Syncing...")
         files_dict = await load_workspace_files(context)
         await sync_workspace_to_sandbox(tool_registry, files_dict)
+        # Sync workspace to workspace_run
+        await run_sandbox_command_system(tool_registry, "mkdir -p /workspace_run && rsync -av --delete /workspace/ /workspace_run/")
+        await sandbox_write_file(tool_registry, "/tmp/.workspace_version", str(current_version))
+
+    if not init_res or "/tmp/.sandbox_init" not in init_res:
+        logger.log("[sandbox] Sandbox sentinel missing. Deploying skills...")
         # Re-sync skills
         await sync_skills_to_sandbox(tool_registry)
         # Write the sentinel file
         await sandbox_write_file(tool_registry, "/tmp/.sandbox_init", "1")
-        logger.log("[sandbox] Sandbox successfully reinitialized!")
+        logger.log("[sandbox] Sandbox successfully initialized!")
 
 
 async def sync_workspace_from_sandbox(context: Any, tool_registry: ToolRegistry) -> None:
@@ -1574,15 +1589,18 @@ else:
         finally:
             save_span.end()
 
-    # ── Workspace: already synced during tool execution via inotify change events; skip redundant end-of-handler sync ──
-
+    # ── Workspace: Sync back changes from sandbox workspace to KV store ──
     if 'tool_registry' in locals() and tool_registry:
-        # ── Inotify: Stop filesystem watcher (Disabled for stateless sandbox) ──
-        # try:
-        #     await stop_inotify_watcher(tool_registry)
-        # except Exception as e:
-        #     logger.log(f"[inotify] Failed to stop watcher: {e}")
-        pass
+        try:
+            logger.log("[workspace] Syncing workspace changes from sandbox back to KV...")
+            await sync_workspace_from_sandbox(context, tool_registry)
+            # Read the new version and update the sandbox sentinel
+            current_version = await load_workspace_version(context)
+            await sandbox_write_file(tool_registry, "/tmp/.workspace_version", str(current_version))
+            # Emit file changed event so frontend refreshes its view
+            yield sse_event("file_changed", {"version": current_version})
+        except Exception as e:
+            logger.error(f"[workspace] Failed to sync workspace from sandbox at end of turn: {e}")
 
     # ── Clear active tool registry ──
     from ..workspace.files import clear_active_tool_registry
