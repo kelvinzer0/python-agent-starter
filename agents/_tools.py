@@ -91,6 +91,16 @@ class ToolRegistry:
                     cmd_val = args[ck].strip()
                     if cmd_val and not cmd_val.startswith("cd /workspace"):
                         args[ck] = f"cd /workspace && {cmd_val}"
+        elif "interpreter" in name_lower or "code" in name_lower:
+            code_keys = ["code", "source", "script", "content"]
+            for ck in code_keys:
+                if ck in args and isinstance(args[ck], str):
+                    code_val = args[ck]
+                    # Inject working directory change if it looks like Python code
+                    if "import " in code_val or "print(" in code_val or "\n" in code_val or "def " in code_val:
+                        prefix = "import os; os.makedirs('/workspace', exist_ok=True); os.chdir('/workspace')\n"
+                        if prefix not in code_val:
+                            args[ck] = prefix + code_val
 
         try:
             if self._use_kwargs.get(name, False):
