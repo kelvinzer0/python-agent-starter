@@ -1415,6 +1415,7 @@ else:
                     wave_outputs = await asyncio.gather(*wave_tasks)
 
                     # ── Post-toolcall sync: pull sandbox changes back after execution ──
+                    pre_sync_version = await load_workspace_version(context)
                     try:
                         post_files = await sync_workspace_from_sandbox(context, tool_registry)
                         if post_files:
@@ -1422,11 +1423,13 @@ else:
                     except Exception as sync_err:
                         logger.log(f"[sync] Post-toolcall sync failed: {sync_err}")
 
-                    # Check if local workspace was modified by custom tools
-                    if getattr(tool_registry, "local_fs_dirty", False):
+                    # Emit file_changed if workspace version increased (sandbox sync or local_fs_dirty)
+                    local_dirty = getattr(tool_registry, "local_fs_dirty", False)
+                    if local_dirty:
                         tool_registry.local_fs_dirty = False
-                        current_version = await load_workspace_version(context)
-                        yield sse_event("file_changed", {"version": current_version})
+                    post_sync_version = await load_workspace_version(context)
+                    if post_sync_version > pre_sync_version or local_dirty:
+                        yield sse_event("file_changed", {"version": post_sync_version})
 
                     # 3. Process outputs and emit result/image events
                     for tc_item, result, extraction, duration_ms in wave_outputs:
