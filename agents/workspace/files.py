@@ -276,8 +276,6 @@ async def handler(context: Any) -> dict[str, Any]:
         if action_type == "delete":
             try:
                 await run_sandbox_command_system(tool_registry, f"rm -f /workspace/{shlex.quote(filename)}")
-                # Sync from workspace (A) to workspace_run (B)
-                await run_sandbox_command_system(tool_registry, "mkdir -p /workspace_run && rsync -av --delete /workspace/ /workspace_run/")
                 # Also update KV: load files, remove entry, save
                 current_files = await load_workspace_files(context)
                 if filename in current_files:
@@ -287,15 +285,13 @@ async def handler(context: Any) -> dict[str, Any]:
                 return {"success": True}
             except Exception as e:
                 logger.error(f"[workspace_files] Failed to sync delete: {e}")
-                return {"error": f"Failed to sync delete: {str(e)}"}
+                return {"error": f"Failed to sync delete: {str(e)}"}        
         else:
             # Write/sync content to sandbox
             if content is None:
                 return {"error": "content is required for sync write action"}
             try:
                 await sandbox_write_file(tool_registry, f"/workspace/{filename}", content)
-                # Sync from workspace (A) to workspace_run (B)
-                await run_sandbox_command_system(tool_registry, "mkdir -p /workspace_run && rsync -av --delete /workspace/ /workspace_run/")
                 # Also update KV: load files, update entry, save
                 current_files = await load_workspace_files(context)
                 current_files[filename] = content
@@ -332,7 +328,6 @@ async def handler(context: Any) -> dict[str, Any]:
                 try:
                     from ..chat.index import sandbox_write_file, run_sandbox_command_system
                     await sandbox_write_file(tool_registry, f"/workspace/{filename}", content)
-                    await run_sandbox_command_system(tool_registry, "mkdir -p /workspace_run && rsync -av --delete /workspace/ /workspace_run/")
                     new_version = await load_workspace_version(context)
                     await sandbox_write_file(tool_registry, "/tmp/.workspace_version", str(new_version))
                     logger.log(f"[workspace_files] Automatically synced write {filename} to sandbox")
@@ -369,7 +364,6 @@ async def handler(context: Any) -> dict[str, Any]:
                 try:
                     from ..chat.index import run_sandbox_command_system, sandbox_write_file
                     await run_sandbox_command_system(tool_registry, f"rm -f /workspace/{shlex.quote(filename)}")
-                    await run_sandbox_command_system(tool_registry, "mkdir -p /workspace_run && rsync -av --delete /workspace/ /workspace_run/")
                     new_version = await load_workspace_version(context)
                     await sandbox_write_file(tool_registry, "/tmp/.workspace_version", str(new_version))
                     logger.log(f"[workspace_files] Automatically synced delete {filename} to sandbox")

@@ -99,15 +99,8 @@ class ToolRegistry:
                             elif cmd_val.startswith("cd /workspace &&"):
                                 cmd_val = cmd_val[len("cd /workspace &&"):]
                             
-                            args[ck] = (
-                                # Use rsync for workspace sync if available; fall back to cp -a.
-                                "(mkdir -p /workspace_run && "
-                                "(rsync -a --delete /workspace/ /workspace_run/ 2>/dev/null || "
-                                " (rm -rf /workspace_run && cp -a /workspace /workspace_run)) && "
-                                f"(cd /workspace_run && ({cmd_val})) ; "
-                                "(rsync -a --delete /workspace_run/ /workspace/ 2>/dev/null || "
-                                " true))"
-                            )
+                            # Run the command directly inside /workspace.
+                            args[ck] = f"cd /workspace && ({cmd_val})"
             elif "interpreter" in name_lower or "code" in name_lower:
                 code_keys = ["code", "source", "script", "content"]
                 for ck in code_keys:
@@ -116,23 +109,9 @@ class ToolRegistry:
                         # Inject working directory change and double-sync if it looks like Python code
                         if "import " in code_val or "print(" in code_val or "\n" in code_val or "def " in code_val:
                             prefix = (
-                                "import os, subprocess, atexit\n"
-                                "os.makedirs('/workspace_run', exist_ok=True)\n"
-                                "try:\n"
-                                "    subprocess.run(['rsync', '-a', '--delete', '/workspace/', '/workspace_run/'],\n"
-                                "                   check=False, capture_output=True)\n"
-                                "except FileNotFoundError:\n"
-                                "    import shutil\n"
-                                "    if os.path.exists('/workspace') and not os.listdir('/workspace_run'):\n"
-                                "        shutil.copytree('/workspace', '/workspace_run', dirs_exist_ok=True)\n"
-                                "os.chdir('/workspace_run')\n"
-                                "def _sync_back():\n"
-                                "    try:\n"
-                                "        subprocess.run(['rsync', '-a', '--delete', '/workspace_run/', '/workspace/'],\n"
-                                "                       check=False, capture_output=True)\n"
-                                "    except FileNotFoundError:\n"
-                                "        pass\n"
-                                "atexit.register(_sync_back)\n"
+                                "import os\n"
+                                "os.makedirs('/workspace', exist_ok=True)\n"
+                                "os.chdir('/workspace')\n"
                             )
                             if "atexit.register(_sync_back)" not in code_val:
                                 args[ck] = prefix + code_val

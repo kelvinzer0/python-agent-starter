@@ -169,17 +169,8 @@ async def run_sandbox_command_system(tool_registry: ToolRegistry, command: str) 
 
 
 async def run_sandbox_command(tool_registry: ToolRegistry, command: str) -> str | None:
-    """Execute a shell command wrapped in the rsync-based workspace run sync."""
-    # First execute a raw mkdir -p /workspace_run via the system runner
-    await run_sandbox_command_system(tool_registry, "mkdir -p /workspace_run")
-    
-    # Wrap the given command
-    wrapped_command = (
-        "rsync -av --delete /workspace/ /workspace_run/ && "
-        f"((cd /workspace_run && {command}) ; "
-        "rsync -av --delete /workspace_run/ /workspace/)"
-    )
-    
+    """Execute a shell command inside the sandbox, running directly in /workspace."""
+    wrapped_command = f"cd /workspace && ({command})"
     return await run_sandbox_command_system(tool_registry, wrapped_command)
 
 
@@ -316,7 +307,7 @@ except Exception as e:
 
 
 async def sync_workspace_to_sandbox(tool_registry: ToolRegistry, files_dict: dict[str, str]) -> None:
-    """Push workspace files to sandbox /workspace/ using direct file writes + rsync."""
+    """Push workspace files to sandbox /workspace/ using direct file writes."""
     # Clean up any existing workspace files to ensure deleted files are removed
     await run_sandbox_command_system(tool_registry, "rm -rf /workspace && mkdir -p /workspace")
 
@@ -350,8 +341,6 @@ async def ensure_sandbox_initialized(context: Any, tool_registry: ToolRegistry) 
         logger.log(f"[sandbox] Workspace sync needed (sandbox version: {sandbox_version}, cloud version: {current_version}). Syncing...")
         files_dict = await load_workspace_files(context)
         await sync_workspace_to_sandbox(tool_registry, files_dict)
-        # Sync workspace to workspace_run
-        await run_sandbox_command_system(tool_registry, "mkdir -p /workspace_run && rsync -av --delete /workspace/ /workspace_run/")
         await sandbox_write_file(tool_registry, "/tmp/.workspace_version", str(current_version))
 
     if not init_res or "/tmp/.sandbox_init" not in init_res:
@@ -1017,7 +1006,6 @@ async def handler(context: Any) -> AsyncGenerator[str, None]:
             current_files[filename] = content
             await save_workspace_files(context, current_files)
             await sandbox_write_file(tool_registry, f"/workspace/{filename}", content)
-            await run_sandbox_command_system(tool_registry, "mkdir -p /workspace_run && rsync -av --delete /workspace/ /workspace_run/ 2>/dev/null || true")
             tool_registry.local_fs_dirty = True
             return f"Successfully wrote file '{filename}' to local workspace."
 
@@ -1028,7 +1016,6 @@ async def handler(context: Any) -> AsyncGenerator[str, None]:
                 del current_files[filename]
                 await save_workspace_files(context, current_files)
                 await run_sandbox_command_system(tool_registry, f"rm -f /workspace/{shlex.quote(filename)}")
-                await run_sandbox_command_system(tool_registry, "mkdir -p /workspace_run && rsync -av --delete /workspace/ /workspace_run/ 2>/dev/null || true")
                 tool_registry.local_fs_dirty = True
                 return f"Successfully deleted file '{filename}' from local workspace."
             return f"Error: File '{filename}' not found in local workspace."
@@ -1126,14 +1113,12 @@ async def handler(context: Any) -> AsyncGenerator[str, None]:
                 await run_sandbox_command_system(tool_registry, f"mkdir -p {parent_dir}")
             success = await sandbox_write_file(tool_registry, path, content)
             if success:
-                await run_sandbox_command_system(tool_registry, "mkdir -p /workspace_run && rsync -av --delete /workspace/ /workspace_run/")
                 return f"Successfully wrote file '{filename}' in sandbox container."
             return f"Error: Failed to write file '{filename}' in sandbox container."
 
         async def sandbox_delete_file_tool(filename: str) -> str:
             path = filename if filename.startswith("/") else f"/workspace/{filename}"
             await run_sandbox_command_system(tool_registry, f"rm -f {shlex.quote(path)}")
-            await run_sandbox_command_system(tool_registry, "mkdir -p /workspace_run && rsync -av --delete /workspace/ /workspace_run/")
             return f"Successfully deleted file '{filename}' from sandbox container."
 
         async def sandbox_list_files_tool() -> str:
