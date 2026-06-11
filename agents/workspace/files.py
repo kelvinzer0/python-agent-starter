@@ -53,15 +53,22 @@ async def _load_workspace_raw(context: Any) -> dict[str, Any] | None:
     # Fallback: Load from conversation history
     if raw is None:
         try:
-            res = store.get_messages(cid, limit=500, order="desc")
+            res = store.get_messages(cid, limit=500, order="asc")
             if inspect.isawaitable(res):
                 messages = await res
             else:
                 messages = res
 
-            for msg in messages or []:
-                role = getattr(msg, "role", None) or (msg.get("role") if isinstance(msg, dict) else None)
-                content = getattr(msg, "content", None) or (msg.get("content") if isinstance(msg, dict) else None)
+            if hasattr(store, "to_openai_input"):
+                messages = store.to_openai_input(messages)
+
+            for msg in reversed(messages or []):
+                if isinstance(msg, dict):
+                    role = msg.get("role")
+                    content = msg.get("content")
+                else:
+                    role = getattr(msg, "role", None)
+                    content = getattr(msg, "content", None)
                 if role == "system" and isinstance(content, str) and content.startswith("__WORKSPACE_FILES_STATE__:"):
                     json_str = content[len("__WORKSPACE_FILES_STATE__:"):]
                     raw = json.loads(json_str)
