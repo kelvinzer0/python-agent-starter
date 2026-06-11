@@ -44,14 +44,14 @@ def _get_store(context: Any):
 
 
 async def _store_get(store: Any, key: str) -> Any:
-    """Get a value from store by scanning messages for the key."""
+    """Get a value from store by scanning messages for the key.
+    Uses a sanitized conversation_id (replaces @ with _at_)."""
+    safe_key = key.replace("@", "_at_")
     try:
-        # Get all messages and look for our key
-        messages = await store.get_messages(key, limit=1000, order="asc")
+        messages = await store.get_messages(safe_key, limit=1000, order="asc")
         if not messages:
             return None
 
-        # Look for the last matching message
         for msg in reversed(messages):
             role = getattr(msg, "role", None) if not isinstance(msg, dict) else msg.get("role")
             content = getattr(msg, "content", None) if not isinstance(msg, dict) else msg.get("content")
@@ -67,10 +67,12 @@ async def _store_get(store: Any, key: str) -> Any:
 
 
 async def _store_put(store: Any, key: str, value: Any, prefix: str = "__AUTH_DATA__:") -> bool:
-    """Store a value by appending a system message."""
+    """Store a value by appending a system message.
+    Uses a sanitized conversation_id (replaces @ with _at_)."""
+    safe_key = key.replace("@", "_at_")
     try:
         content_str = prefix + json.dumps(value)
-        res = store.append_message(key, "system", content_str)
+        res = store.append_message(safe_key, "system", content_str)
         if hasattr(res, "__await__"):
             await res
         return True
