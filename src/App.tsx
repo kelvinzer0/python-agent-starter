@@ -4,7 +4,7 @@ import type { RawSseEvent, ToolDebugPayload, WorkspaceFile } from './api';
 import { 
   fetchConversationHistory, fetchModels, sendMessageStream, stopAgent,
   fetchWorkspaceFiles, readWorkspaceFile, writeWorkspaceFile, deleteWorkspaceFile,
-  fetchWorkspaceFileStatus, syncFileToSandbox, syncDeleteToSandbox
+  fetchWorkspaceFileStatus
 } from './api';
 import type { ModelOption } from './api';
 import { I18nProvider, useT } from './i18n';
@@ -889,8 +889,6 @@ function AppInner() {
     try {
       const result = await writeWorkspaceFile(conversationId, filename, content, knownVersionRef.current || undefined);
       if (result.success) {
-        // Push to sandbox
-        syncFileToSandbox(conversationId, filename, content).catch(() => {});
         knownVersionRef.current += 1;
         setEditingFile(null);
         await refreshLocalFiles();
@@ -899,7 +897,6 @@ function AppInner() {
         await syncFilesFromCloud(conversationId);
         const retryResult = await writeWorkspaceFile(conversationId, filename, content);
         if (retryResult.success) {
-          syncFileToSandbox(conversationId, filename, content).catch(() => {});
           setEditingFile(null);
           await refreshLocalFiles();
         } else {
@@ -919,14 +916,12 @@ function AppInner() {
     try {
       const result = await deleteWorkspaceFile(conversationId, filename, knownVersionRef.current || undefined);
       if (result.success) {
-        syncDeleteToSandbox(conversationId, filename).catch(() => {});
         knownVersionRef.current += 1;
         await refreshLocalFiles();
       } else if (result.conflict) {
         await syncFilesFromCloud(conversationId);
         const retryResult = await deleteWorkspaceFile(conversationId, filename);
         if (retryResult.success) {
-          syncDeleteToSandbox(conversationId, filename).catch(() => {});
           await refreshLocalFiles();
         } else {
           alert('Failed to delete file after sync — please try again');

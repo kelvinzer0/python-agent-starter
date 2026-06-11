@@ -312,6 +312,20 @@ async def handler(context: Any) -> dict[str, Any]:
         try:
             await save_workspace_files(context, files_dict)
             logger.log(f"[workspace_files] Saved updated file {filename} to store")
+            
+            # Sync to sandbox if session is active
+            tool_registry = _active_tool_registry
+            if tool_registry:
+                try:
+                    from ..chat.index import sandbox_write_file, run_sandbox_command_system
+                    await sandbox_write_file(tool_registry, f"/workspace/{filename}", content)
+                    await run_sandbox_command_system(tool_registry, "mkdir -p /workspace_run && rsync -av --delete /workspace/ /workspace_run/")
+                    new_version = await load_workspace_version(context)
+                    await sandbox_write_file(tool_registry, "/tmp/.workspace_version", str(new_version))
+                    logger.log(f"[workspace_files] Automatically synced write {filename} to sandbox")
+                except Exception as ex:
+                    logger.error(f"[workspace_files] Failed to sync write to sandbox: {ex}")
+                    
             return {"success": True}
         except Exception as e:
             logger.error(f"[workspace_files] Failed to write file: {e}")
@@ -335,6 +349,20 @@ async def handler(context: Any) -> dict[str, Any]:
         try:
             await save_workspace_files(context, files_dict)
             logger.log(f"[workspace_files] Deleted file {filename} from store")
+            
+            # Sync delete to sandbox if session is active
+            tool_registry = _active_tool_registry
+            if tool_registry:
+                try:
+                    from ..chat.index import run_sandbox_command_system
+                    await run_sandbox_command_system(tool_registry, f"rm -f /workspace/{shlex.quote(filename)}")
+                    await run_sandbox_command_system(tool_registry, "mkdir -p /workspace_run && rsync -av --delete /workspace/ /workspace_run/")
+                    new_version = await load_workspace_version(context)
+                    await sandbox_write_file(tool_registry, "/tmp/.workspace_version", str(new_version))
+                    logger.log(f"[workspace_files] Automatically synced delete {filename} to sandbox")
+                except Exception as ex:
+                    logger.error(f"[workspace_files] Failed to sync delete to sandbox: {ex}")
+                    
             return {"success": True}
         except Exception as e:
             logger.error(f"[workspace_files] Failed to delete file: {e}")
