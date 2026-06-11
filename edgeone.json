@@ -1,5 +1,15 @@
 {
   "installCommand": "npm install",
   "buildCommand": "npm run build",
-  "outputDirectory": "dist"
+  "outputDirectory": "dist",
+  "cloudFunctions": {
+    "python": {
+      "kv": [
+        {
+          "name": "KV_STORE",
+          "description": "Persistent workspace file storage for sandbox filesystem"
+        }
+      ]
+    }
+  }
 }

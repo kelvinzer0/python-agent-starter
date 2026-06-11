@@ -1105,12 +1105,29 @@ async def handler(context: Any) -> AsyncGenerator[str, None]:
                 await run_sandbox_command_system(tool_registry, f"mkdir -p {parent_dir}")
             success = await sandbox_write_file(tool_registry, path, content)
             if success:
+                # Auto-persist workspace file mutations to KV
+                if path.startswith("/workspace/"):
+                    rel = path[len("/workspace/"):]
+                    current_kv = await snapshot_workspace(context)
+                    current_kv[rel] = content
+                    await save_workspace_files(context, current_kv)
+                    new_ver = await load_workspace_version(context)
+                    # Note: file_changed SSE is emitted in the post-tool-wave block
                 return f"Successfully wrote file '{filename}' in sandbox container."
             return f"Error: Failed to write file '{filename}' in sandbox container."
 
         async def sandbox_delete_file_tool(filename: str) -> str:
             path = filename if filename.startswith("/") else f"/workspace/{filename}"
             await run_sandbox_command_system(tool_registry, f"rm -f {shlex.quote(path)}")
+            # Auto-persist workspace file deletions to KV
+            if path.startswith("/workspace/"):
+                rel = path[len("/workspace/"):]
+                current_kv = await snapshot_workspace(context)
+                if rel in current_kv:
+                    del current_kv[rel]
+                    await save_workspace_files(context, current_kv)
+                    new_ver = await load_workspace_version(context)
+                    # Note: file_changed SSE is emitted in the post-tool-wave block
             return f"Successfully deleted file '{filename}' from sandbox container."
 
         async def sandbox_list_files_tool() -> str:

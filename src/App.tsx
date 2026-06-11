@@ -37,6 +37,7 @@ import {
   loadConversationFiles,
   saveFile,
   deleteFile,
+  saveManifest,
 } from './lib/workspaceStore';
 import type { ReplAction } from './components/repl/keymap';
 import Sidebar, { type ChatSessionInfo } from './components/Sidebar';
@@ -682,7 +683,10 @@ function AppInner() {
             onFileChanged: payload => {
               if (payload.version > knownVersionRef.current) {
                 knownVersionRef.current = payload.version;
-                syncFilesFromCloud(conversationIdRef.current);
+                syncFilesFromCloud(conversationIdRef.current).then(() => {
+                  // Persist version manifest in IndexedDB for efficient reload detection
+                  saveManifest(conversationIdRef.current, {}, payload.version).catch(() => {});
+                });
               }
             },
 
