@@ -744,6 +744,7 @@ function AppInner() {
             },
 
             onToolDebug: (payload: ToolDebugPayload) => {
+              console.log('[TOOL-DEBUG]', payload.phase, payload.tool, !!payload.argumentsPreview);
               if (payload.phase === 'call') {
                 // Merge call-phase data into the most recent matching tool line
                 const toolName = payload.tool;
