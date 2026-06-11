@@ -35,13 +35,14 @@ async def _load_workspace_raw(context: Any) -> dict[str, Any] | None:
         logger.log(f"[DEBUG _load_workspace_raw] Failed to resolve conversation ID! context={context}")
         return None
 
+    kv_key = f"workspace_files_{cid}"
     logger.log(f"[DEBUG _load_workspace_raw] cid={cid}, store_type={type(store)}")
     raw = None
 
     # Try standard KV first
     try:
         if hasattr(store, "get"):
-            res = store.get("workspace_files_global")
+            res = store.get(kv_key)
             if inspect.isawaitable(res):
                 res = await res
             if res and isinstance(res, dict):
@@ -104,9 +105,9 @@ async def load_workspace_version(context: Any) -> int:
     return 0
 
 
-async def load_workspace_files(context: Any) -> dict[str, str]:
+async def load_workspace_files(context: Any, skip_templates: bool = False) -> dict[str, str]:
     """Load workspace files from store (falls back to message history if KV is empty/unsupported).
-    Falls back to project templates if store is empty.
+    Falls back to project templates if store is empty, unless skip_templates is True.
     """
     raw = await _load_workspace_raw(context)
     files_dict = _unwrap_files(raw)
@@ -121,7 +122,10 @@ async def load_workspace_files(context: Any) -> dict[str, str]:
         if isinstance(body, dict):
             cid = body.get("conversationId") or body.get("conversation_id")
 
-    # If both failed/empty, load templates
+    # If both failed/empty, load templates (unless skipped)
+    if skip_templates:
+        logger.log(f"[workspace] No files in store for {cid}. Skipping templates (skip_templates=True).")
+        return {}
     logger.log(f"[workspace] No files in store for {cid}. Loading default templates.")
     files_dict = {}
 
@@ -166,6 +170,7 @@ async def save_workspace_files(context: Any, files_dict: dict[str, str]) -> None
         logger.log(f"[DEBUG save_workspace_files] Failed to resolve conversation ID! context={context}")
         return
 
+    kv_key = f"workspace_files_{cid}"
     logger.log(f"[DEBUG save_workspace_files] cid={cid}, store_type={type(store)}")
 
     # Determine current version before saving
@@ -176,13 +181,13 @@ async def save_workspace_files(context: Any, files_dict: dict[str, str]) -> None
     # Try standard KV first (in case it gets supported or in other environments)
     try:
         if hasattr(store, "put"):
-            res = store.put("workspace_files_global", wrapped)
+            res = store.put(kv_key, wrapped)
             if inspect.isawaitable(res):
                 await res
             logger.log(f"[workspace] Saved workspace v{new_version} to KV store for {cid}")
             return
         elif hasattr(store, "set"):
-            res = store.set("workspace_files_global", wrapped)
+            res = store.set(kv_key, wrapped)
             if inspect.isawaitable(res):
                 await res
             logger.log(f"[workspace] Saved workspace v{new_version} to KV store for {cid}")
@@ -238,8 +243,11 @@ async def handler(context: Any) -> dict[str, Any]:
     filename = body.get("filename")
     content = body.get("content")
 
+    # Determine if this is a mutation action that should skip template fallback
+    is_mutation = action in ("write", "delete", "sync")
+
     # Load the current workspace dict (falls back to templates if not in store yet)
-    files_dict = await load_workspace_files(context)
+    files_dict = await load_workspace_files(context, skip_templates=is_mutation)
 
     # Filter out python files, system files, and __pycache__ from the workspace view
     files_dict = {
@@ -277,7 +285,7 @@ async def handler(context: Any) -> dict[str, Any]:
             try:
                 await run_sandbox_command_system(tool_registry, f"rm -f /workspace/{shlex.quote(filename)}")
                 # Also update KV: load files, remove entry, save
-                current_files = await load_workspace_files(context)
+                current_files = await load_workspace_files(context, skip_templates=True)
                 if filename in current_files:
                     del current_files[filename]
                     await save_workspace_files(context, current_files)
@@ -293,7 +301,7 @@ async def handler(context: Any) -> dict[str, Any]:
             try:
                 await sandbox_write_file(tool_registry, f"/workspace/{filename}", content)
                 # Also update KV: load files, update entry, save
-                current_files = await load_workspace_files(context)
+                current_files = await load_workspace_files(context, skip_templates=True)
                 current_files[filename] = content
                 await save_workspace_files(context, current_files)
                 logger.log(f"[workspace_files] Synced write {filename} to sandbox")

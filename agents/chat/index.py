@@ -378,7 +378,11 @@ async def sync_workspace_from_sandbox(context: Any, tool_registry: ToolRegistry)
 
     logger.log(f"[workspace] Read {len(updated_files)} files from sandbox via tar pipe")
     try:
-        await save_workspace_files(context, updated_files)
+        # Merge: start from current KV, overlay sandbox files on top
+        current_kv = await snapshot_workspace(context)
+        merged = dict(current_kv)
+        merged.update(updated_files)
+        await save_workspace_files(context, merged)
     except Exception as e:
         logger.log(f"[workspace] Failed to save updated workspace to store: {e}")
 
