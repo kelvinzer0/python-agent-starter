@@ -40,6 +40,7 @@ from .._session import ChatSession
 from .._tools import build_tools, ToolRegistry, _stringify_result
 from ._stream import LlmRoundResult, sse_event, stream_llm_round, safe_json_preview
 from ._images import extract_images_from_tool_result
+from ..workspace.files import snapshot_workspace, load_workspace_files, save_workspace_files, load_workspace_version, _load_workspace_raw, _unwrap_files
 
 
 logger = create_logger("chat")
@@ -295,149 +296,6 @@ except Exception as e:
     await run_sandbox_command(tool_registry, "rm -f /tmp/skills.zip.b64 /tmp/skills.zip /tmp/local_manifest.json /tmp/extract.py")
 
 
-# ── Workspace Persistence & Synchronization ──
-
-async def save_workspace_files(context: Any, files_dict: dict[str, str]) -> None:
-    """Save workspace files to store (falls back to message history if KV is not supported).
-    Stores {"version": N, "files": {...}} with an incrementing version number.
-    """
-    cid = context.conversation_id
-    store = context.store
-    if not cid or not store:
-        return
-
-    # Determine current version before saving
-    current_version = await _load_workspace_version(context)
-    new_version = current_version + 1
-    wrapped = {"version": new_version, "files": files_dict}
-
-    # Try standard KV first (in case it gets supported or in other environments)
-    try:
-        if hasattr(store, "put"):
-            res = store.put("workspace_files_global", wrapped)
-            if inspect.isawaitable(res):
-                await res
-            logger.log(f"[workspace] Saved workspace v{new_version} to KV store for {cid}")
-            return
-        elif hasattr(store, "set"):
-            res = store.set("workspace_files_global", wrapped)
-            if inspect.isawaitable(res):
-                await res
-            logger.log(f"[workspace] Saved workspace v{new_version} to KV store for {cid}")
-            return
-    except Exception as e:
-        logger.log(f"[workspace] KV store save failed, falling back to messages: {e}")
-
-    # Fallback: Save as a system message in conversation history
-    try:
-        content_str = "__WORKSPACE_FILES_STATE__:" + json.dumps(wrapped)
-        res = store.append_message(cid, "system", content_str)
-        if inspect.isawaitable(res):
-            await res
-        logger.log(f"[workspace] Saved workspace v{new_version} to conversation history for {cid}")
-    except Exception as e:
-        logger.log(f"[workspace] Failed to save workspace to conversation history: {e}")
-
-
-async def _load_workspace_raw(context: Any) -> dict[str, Any] | None:
-    """Load raw workspace data from store. Returns the stored object (may be
-    old-format plain dict or new-format {"version": N, "files": {...}})."""
-    cid = context.conversation_id
-    store = context.store
-    if not cid or not store:
-        return None
-
-    raw = None
-
-    # Try standard KV first
-    try:
-        if hasattr(store, "get"):
-            res = store.get("workspace_files_global")
-            if inspect.isawaitable(res):
-                res = await res
-            if res and isinstance(res, dict):
-                raw = res
-    except Exception as e:
-        logger.log(f"[workspace] Failed to get files from KV store: {e}")
-
-    # Fallback: Load from conversation history
-    if raw is None:
-        try:
-            res = store.get_messages(cid, limit=500, order="desc")
-            if inspect.isawaitable(res):
-                messages = await res
-            else:
-                messages = res
-
-            for msg in messages or []:
-                role = getattr(msg, "role", None) or (msg.get("role") if isinstance(msg, dict) else None)
-                content = getattr(msg, "content", None) or (msg.get("content") if isinstance(msg, dict) else None)
-                if role == "system" and isinstance(content, str) and content.startswith("__WORKSPACE_FILES_STATE__:"):
-                    json_str = content[len("__WORKSPACE_FILES_STATE__:"):]
-                    raw = json.loads(json_str)
-                    logger.log(f"[workspace] Loaded workspace from conversation history for {cid}")
-                    break
-        except Exception as e:
-            logger.log(f"[workspace] Failed to load workspace from conversation history: {e}")
-
-    return raw
-
-
-def _unwrap_files(raw: dict[str, Any] | None) -> dict[str, str]:
-    """Extract files dict from either old-format (plain dict) or new-format
-    {"version": N, "files": {...}} storage."""
-    if raw is None:
-        return {}
-    # New format with version key
-    if isinstance(raw, dict) and "files" in raw and isinstance(raw.get("files"), dict):
-        return raw["files"]
-    # Old format — raw dict is the files dict itself
-    if isinstance(raw, dict) and "version" not in raw:
-        return {k: v for k, v in raw.items() if isinstance(v, str)}
-    # Fallback
-    return {}
-
-
-async def load_workspace_version(context: Any) -> int:
-    """Return the current workspace version number (0 if not yet versioned)."""
-    raw = await _load_workspace_raw(context)
-    if isinstance(raw, dict) and "version" in raw and isinstance(raw["version"], int):
-        return raw["version"]
-    # Old format or empty — version is 0
-    return 0
-
-
-async def load_workspace_files(context: Any) -> dict[str, str]:
-    """Load workspace files from store (falls back to message history if KV is empty/unsupported).
-    Falls back to project templates if store is empty.
-    """
-    raw = await _load_workspace_raw(context)
-    files_dict = _unwrap_files(raw)
-
-    if files_dict:
-        return files_dict
-
-    # If both failed/empty, load templates
-    logger.log(f"[workspace] No files in store for {cid}. Loading default templates.")
-    files_dict = {}
-    
-    project_root = Path(__file__).resolve().parent.parent.parent
-    workspace_dir = project_root / "workspace"
-    if not workspace_dir.exists():
-        workspace_dir = Path(__file__).resolve().parent.parent / "workspace"
-    if not workspace_dir.exists():
-        workspace_dir = Path.cwd() / "workspace"
-        
-    if workspace_dir.exists() and workspace_dir.is_dir():
-        for filepath in workspace_dir.glob("**/*"):
-            if filepath.is_file():
-                rel_path = str(filepath.relative_to(workspace_dir))
-                try:
-                    content = filepath.read_text(encoding="utf-8").strip()
-                    files_dict[rel_path] = content
-                except Exception:
-                    pass
-    return files_dict
 
 
 async def sync_workspace_to_sandbox(tool_registry: ToolRegistry, files_dict: dict[str, str]) -> None:
@@ -528,10 +386,10 @@ async def start_inotify_watcher(tool_registry: ToolRegistry) -> None:
 
     # Write the watcher script to the sandbox
     await sandbox_write_file(tool_registry, "/tmp/fs_watcher.py", watcher_code)
-    # Install watchdog and start the watcher in the background
+    # Install watchdog with timeout and start the watcher in the background
     await run_sandbox_command(
         tool_registry,
-        "pip install watchdog -q && nohup python3 /tmp/fs_watcher.py > /tmp/fs_watcher.log 2>&1 &"
+        "timeout 60 pip install watchdog -q 2>/dev/null; nohup python3 /tmp/fs_watcher.py > /tmp/fs_watcher.log 2>&1 &"
     )
     # Clear any stale event log
     await sandbox_write_file(tool_registry, "/tmp/fs_events.jsonl", "")
@@ -1231,19 +1089,31 @@ async def handler(context: Any) -> AsyncGenerator[str, None]:
                     for tc in ready_calls:
                         pending_calls.remove(tc)
 
-                    # 1. Resolve arguments and emit call events
+                # 1. Resolve arguments and emit call events
+                    # Take a read-only snapshot of workspace files from KV so the
+                    # frontend can update its local state even when the sandbox
+                    # has been reset between requests.
+                    files_snapshot: dict[str, str] | None = None
+                    try:
+                        files_snapshot = await snapshot_workspace(context)
+                        if not files_snapshot:
+                            files_snapshot = None
+                    except Exception as e:
+                        logger.log(f"[orchestrator] Failed to snapshot workspace: {e}")
+
                     ready_calls_with_resolved = []
                     for tc in ready_calls:
                         unresolved_args = tc["arguments"]
                         resolved_args = resolve_placeholders(unresolved_args, executed_results)
                         ready_calls_with_resolved.append((tc, resolved_args))
 
-                        yield sse_event("tool_called", {"tool": tc["name"]})
+                        yield sse_event("tool_called", {"tool": tc["name"], "files_snapshot": files_snapshot})
                         yield sse_event("tool_debug", {
                             "phase": "call",
                             "tool": tc["name"],
                             "id": tc["id"],
                             "argumentsPreview": safe_json_preview(resolved_args, 1200),
+                            "files_snapshot": files_snapshot,
                         })
 
                     # 2. Run execution of ready calls in parallel
@@ -1361,13 +1231,9 @@ async def handler(context: Any) -> AsyncGenerator[str, None]:
         finally:
             save_span.end()
 
-    # ── Workspace: save updated files back to context.store KV ──
-    if 'tool_registry' in locals() and tool_registry:
-        try:
-            await sync_workspace_from_sandbox(context, tool_registry)
-        except Exception as e:
-            logger.error(f"[workspace] Failed to sync workspace from sandbox: {e}")
+    # ── Workspace: already synced during tool execution via inotify change events; skip redundant end-of-handler sync ──
 
+    if 'tool_registry' in locals() and tool_registry:
         # ── Inotify: Stop filesystem watcher ──
         try:
             await stop_inotify_watcher(tool_registry)
