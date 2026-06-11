@@ -115,6 +115,11 @@ export async function writeLocalFile(filename: string, content: string): Promise
   const fs = getFs();
   if (!fs) throw new Error('Virtual filesystem not initialized');
   
+  if (workspaceRoot !== '/') {
+    const permitted = await checkMountPermission(workspaceRoot);
+    if (!permitted) throw new Error('Permission not granted to write to local mounted folder');
+  }
+
   const fullPath = workspaceRoot + filename;
   const parentDir = fullPath.split('/').slice(0, -1).join('/');
   await ensureDir(parentDir);
@@ -134,6 +139,11 @@ export async function readLocalFile(filename: string): Promise<string> {
   const fs = getFs();
   if (!fs) return '';
   
+  if (workspaceRoot !== '/') {
+    const permitted = await checkMountPermission(workspaceRoot);
+    if (!permitted) return '';
+  }
+
   const fullPath = workspaceRoot + filename;
   return new Promise((resolve) => {
     fs.readFile(fullPath, 'utf8', (err: any, data: any) => {
@@ -154,6 +164,11 @@ export async function listLocalFiles(): Promise<{ name: string; size: number; mt
   if (!fs) return [];
   
   const root = getWorkspaceRoot();
+  if (root !== '/') {
+    const permitted = await checkMountPermission(root);
+    if (!permitted) return [];
+  }
+
   const searchRoot = root === '/' ? '/' : root.replace(/\/$/, '');
   
   const allFiles = await readDirRecursive(searchRoot);
@@ -193,6 +208,11 @@ export async function deleteLocalFile(filename: string): Promise<void> {
   const fs = getFs();
   if (!fs) throw new Error('Virtual filesystem not initialized');
   
+  if (workspaceRoot !== '/') {
+    const permitted = await checkMountPermission(workspaceRoot);
+    if (!permitted) throw new Error('Permission not granted to delete in local mounted folder');
+  }
+
   const fullPath = workspaceRoot + filename;
   return new Promise((resolve, reject) => {
     fs.unlink(fullPath, (err: any) => {
@@ -229,5 +249,61 @@ export function mountLocalFolder(): Promise<string> {
  */
 export function unmountLocalFolder() {
   setWorkspaceRoot('/');
+}
+
+/**
+ * Retrieve the native FileSystemDirectoryHandle directly from virtualfs's IndexedDB storage
+ */
+export function getMountDirectoryHandle(mountPath: string): Promise<FileSystemDirectoryHandle | null> {
+  const mountName = mountPath.replace(/^\/mnt\//, '');
+  return new Promise((resolve) => {
+    const request = indexedDB.open('PHOENIX_MOUNTS', 1);
+    request.onerror = () => resolve(null);
+    request.onsuccess = () => {
+      const db = request.result;
+      try {
+        const tx = db.transaction('FS_ACCESS', 'readonly');
+        const store = tx.objectStore('FS_ACCESS');
+        const getReq = store.get('MOUNT_POINTS');
+        getReq.onsuccess = () => {
+          const mountPoints = getReq.result || {};
+          resolve(mountPoints[mountName] || null);
+        };
+        getReq.onerror = () => resolve(null);
+      } catch (e) {
+        resolve(null);
+      }
+    };
+  });
+}
+
+/**
+ * Check if readwrite permission is currently granted to the mounted directory without popping up permission prompt
+ */
+export async function checkMountPermission(mountPath: string): Promise<boolean> {
+  try {
+    const handle = await getMountDirectoryHandle(mountPath);
+    if (!handle) return false;
+    const status = await (handle as any).queryPermission({ mode: 'readwrite' });
+    return status === 'granted';
+  } catch (e) {
+    return false;
+  }
+}
+
+/**
+ * Request readwrite permission for the mounted directory. Must be called from a user gesture trigger.
+ */
+export async function verifyAndRequestPermission(mountPath: string): Promise<boolean> {
+  try {
+    const handle = await getMountDirectoryHandle(mountPath);
+    if (!handle) return false;
+    const status = await (handle as any).queryPermission({ mode: 'readwrite' });
+    if (status === 'granted') return true;
+    const newStatus = await (handle as any).requestPermission({ mode: 'readwrite' });
+    return newStatus === 'granted';
+  } catch (e) {
+    return false;
+  }
 }
 

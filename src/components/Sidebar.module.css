@@ -411,4 +411,29 @@
   background: var(--color-error-light);
 }
 
+.authorizeBtn {
+  appearance: none;
+  background: var(--color-accent);
+  border: none;
+  color: white;
+  font-size: 10px;
+  font-weight: 600;
+  cursor: pointer;
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
+  transition: all 150ms ease;
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.authorizeBtn:hover {
+  filter: brightness(1.1);
+  transform: translateY(-0.5px);
+}
+
+.authorizeBtn:active {
+  transform: translateY(0);
+}
+
 

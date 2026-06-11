@@ -35,6 +35,8 @@ interface SidebarProps {
   mountedPath?: string;
   onMountFolder?: () => void;
   onUnmountFolder?: () => void;
+  hasPermission?: boolean;
+  onRequestPermission?: () => void;
 }
 
 function formatBytes(bytes: number, decimals = 1) {
@@ -65,6 +67,8 @@ export default function Sidebar({
   mountedPath = '',
   onMountFolder,
   onUnmountFolder,
+  hasPermission = true,
+  onRequestPermission,
 }: SidebarProps) {
   const { t } = useT();
   const [historyExpanded, setHistoryExpanded] = useState(true);
@@ -159,19 +163,40 @@ export default function Sidebar({
         {filesExpanded && (
           <div className={styles.mountPanel}>
             {mountedPath ? (
-              <div className={styles.mountedInfo}>
-                <span className={styles.mountPath} title={mountedPath}>
-                  📁 {mountedPath.split('/').pop() || 'Mounted Directory'}
-                </span>
-                <button 
-                  type="button" 
-                  className={styles.unmountBtn} 
-                  onClick={onUnmountFolder}
-                  title="Disconnect Local Folder"
-                >
-                  Disconnect
-                </button>
-              </div>
+              hasPermission ? (
+                <div className={styles.mountedInfo}>
+                  <span className={styles.mountPath} title={mountedPath}>
+                    📁 {mountedPath.split('/').pop() || 'Mounted Directory'}
+                  </span>
+                  <button 
+                    type="button" 
+                    className={styles.unmountBtn} 
+                    onClick={onUnmountFolder}
+                    title="Disconnect Local Folder"
+                  >
+                    Disconnect
+                  </button>
+                </div>
+              ) : (
+                <div className={styles.mountedInfo}>
+                  <button 
+                    type="button" 
+                    className={styles.authorizeBtn} 
+                    onClick={onRequestPermission}
+                    title="Grant Permission to read/write local folder"
+                  >
+                    🔑 Authorize Access
+                  </button>
+                  <button 
+                    type="button" 
+                    className={styles.unmountBtn} 
+                    onClick={onUnmountFolder}
+                    title="Disconnect Local Folder"
+                  >
+                    Disconnect
+                  </button>
+                </div>
+              )
             ) : (
               <button 
                 type="button" 

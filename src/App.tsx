@@ -9,7 +9,8 @@ import {
 import type { ModelOption } from './api';
 import { 
   initLocalFs, writeLocalFile, readLocalFile, listLocalFiles, deleteLocalFile,
-  mountLocalFolder, unmountLocalFolder, setWorkspaceRoot, getWorkspaceRoot
+  mountLocalFolder, unmountLocalFolder, setWorkspaceRoot, getWorkspaceRoot,
+  checkMountPermission, verifyAndRequestPermission
 } from './lib/phcode-fs';
 import { I18nProvider, useT } from './i18n';
 import ReplShell from './components/repl/ReplShell';
@@ -260,15 +261,8 @@ function AppInner() {
   const [editorLoading, setEditorLoading] = useState(false);
   const [editorSaving, setEditorSaving] = useState(false);
   const [mountedPath, setMountedPath] = useState<string>(() => localStorage.getItem('mounted_folder_path') || '');
+  const [hasPermission, setHasPermission] = useState(true);
   const lastSyncedRef = useRef<Map<string, { size: number; mtime: number }>>(new Map());
-
-  useEffect(() => {
-    if (mountedPath) {
-      setWorkspaceRoot(mountedPath);
-    } else {
-      setWorkspaceRoot('/');
-    }
-  }, [mountedPath]);
 
   const refreshLocalFiles = useCallback(async () => {
     try {
@@ -285,6 +279,26 @@ function AppInner() {
       console.error('Failed to load local files:', err);
     }
   }, []);
+
+  useEffect(() => {
+    if (mountedPath) {
+      setWorkspaceRoot(mountedPath);
+      (async () => {
+        await initLocalFs();
+        const granted = await checkMountPermission(mountedPath);
+        setHasPermission(granted);
+        if (granted) {
+          refreshLocalFiles();
+        } else {
+          setWorkspaceFiles([]);
+        }
+      })();
+    } else {
+      setWorkspaceRoot('/');
+      setHasPermission(true);
+      refreshLocalFiles();
+    }
+  }, [mountedPath, refreshLocalFiles]);
 
   const syncFilesFromCloud = useCallback(async (cid: string) => {
     try {
@@ -334,6 +348,15 @@ function AppInner() {
       localStorage.setItem('mounted_folder_path', path);
       setWorkspaceRoot(path);
       
+      // Wait for mount point registration to propagate
+      if ((window as any).fs && typeof (window as any).fs.refreshMountPoints === 'function') {
+        try {
+          await (window as any).fs.refreshMountPoints();
+        } catch (e) {}
+      }
+      await new Promise(resolve => setTimeout(resolve, 300));
+      setHasPermission(true);
+
       console.log(`[mount] Folder mounted at ${path}. Syncing files to sandbox...`);
       const localFiles = await listLocalFiles();
       
@@ -357,8 +380,23 @@ function AppInner() {
     unmountLocalFolder();
     setMountedPath('');
     localStorage.removeItem('mounted_folder_path');
+    setHasPermission(true);
     refreshLocalFiles();
   }, [refreshLocalFiles]);
+
+  const handleRequestPermission = useCallback(async () => {
+    try {
+      const success = await verifyAndRequestPermission(mountedPath);
+      setHasPermission(success);
+      if (success) {
+        await new Promise(resolve => setTimeout(resolve, 300));
+        await refreshLocalFiles();
+        await syncFilesFromCloud(conversationIdRef.current);
+      }
+    } catch (err) {
+      console.error('Failed to request permission:', err);
+    }
+  }, [mountedPath, refreshLocalFiles, syncFilesFromCloud]);
 
   const [lines, setLines] = useState<ReplLine[]>([]);
   const [traceEvents, setTraceEvents] = useState<RawSseEvent[]>([]);
@@ -1217,6 +1255,8 @@ function AppInner() {
         mountedPath={mountedPath}
         onMountFolder={handleMountFolder}
         onUnmountFolder={handleUnmountFolder}
+        hasPermission={hasPermission}
+        onRequestPermission={handleRequestPermission}
       />
       <ReplShell
         modelName={selectedModel || 'Agent'}
