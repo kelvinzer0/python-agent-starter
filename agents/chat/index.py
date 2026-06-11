@@ -298,50 +298,56 @@ except Exception as e:
 # ── Workspace Persistence & Synchronization ──
 
 async def save_workspace_files(context: Any, files_dict: dict[str, str]) -> None:
-    """Save workspace files to store (falls back to message history if KV is not supported)."""
+    """Save workspace files to store (falls back to message history if KV is not supported).
+    Stores {"version": N, "files": {...}} with an incrementing version number.
+    """
     cid = context.conversation_id
     store = context.store
     if not cid or not store:
         return
 
+    # Determine current version before saving
+    current_version = await _load_workspace_version(context)
+    new_version = current_version + 1
+    wrapped = {"version": new_version, "files": files_dict}
+
     # Try standard KV first (in case it gets supported or in other environments)
     try:
         if hasattr(store, "put"):
-            res = store.put("workspace_files_global", files_dict)
+            res = store.put("workspace_files_global", wrapped)
             if inspect.isawaitable(res):
                 await res
-            logger.log(f"[workspace] Saved workspace to KV store for {cid}")
+            logger.log(f"[workspace] Saved workspace v{new_version} to KV store for {cid}")
             return
         elif hasattr(store, "set"):
-            res = store.set("workspace_files_global", files_dict)
+            res = store.set("workspace_files_global", wrapped)
             if inspect.isawaitable(res):
                 await res
-            logger.log(f"[workspace] Saved workspace to KV store for {cid}")
+            logger.log(f"[workspace] Saved workspace v{new_version} to KV store for {cid}")
             return
     except Exception as e:
         logger.log(f"[workspace] KV store save failed, falling back to messages: {e}")
 
     # Fallback: Save as a system message in conversation history
     try:
-        content_str = "__WORKSPACE_FILES_STATE__:" + json.dumps(files_dict)
+        content_str = "__WORKSPACE_FILES_STATE__:" + json.dumps(wrapped)
         res = store.append_message(cid, "system", content_str)
         if inspect.isawaitable(res):
             await res
-        logger.log(f"[workspace] Saved workspace to conversation history for {cid}")
+        logger.log(f"[workspace] Saved workspace v{new_version} to conversation history for {cid}")
     except Exception as e:
         logger.log(f"[workspace] Failed to save workspace to conversation history: {e}")
 
 
-async def load_workspace_files(context: Any) -> dict[str, str]:
-    """Load workspace files from store (falls back to message history if KV is empty/unsupported).
-    Falls back to project templates if store is empty.
-    """
+async def _load_workspace_raw(context: Any) -> dict[str, Any] | None:
+    """Load raw workspace data from store. Returns the stored object (may be
+    old-format plain dict or new-format {"version": N, "files": {...}})."""
     cid = context.conversation_id
     store = context.store
     if not cid or not store:
-        return {}
+        return None
 
-    files_dict = None
+    raw = None
 
     # Try standard KV first
     try:
@@ -350,14 +356,13 @@ async def load_workspace_files(context: Any) -> dict[str, str]:
             if inspect.isawaitable(res):
                 res = await res
             if res and isinstance(res, dict):
-                files_dict = res
+                raw = res
     except Exception as e:
         logger.log(f"[workspace] Failed to get files from KV store: {e}")
 
     # Fallback: Load from conversation history
-    if files_dict is None:
+    if raw is None:
         try:
-            # Fetch last 500 messages, ordered desc (newest first)
             res = store.get_messages(cid, limit=500, order="desc")
             if inspect.isawaitable(res):
                 messages = await res
@@ -369,13 +374,47 @@ async def load_workspace_files(context: Any) -> dict[str, str]:
                 content = getattr(msg, "content", None) or (msg.get("content") if isinstance(msg, dict) else None)
                 if role == "system" and isinstance(content, str) and content.startswith("__WORKSPACE_FILES_STATE__:"):
                     json_str = content[len("__WORKSPACE_FILES_STATE__:"):]
-                    files_dict = json.loads(json_str)
+                    raw = json.loads(json_str)
                     logger.log(f"[workspace] Loaded workspace from conversation history for {cid}")
                     break
         except Exception as e:
             logger.log(f"[workspace] Failed to load workspace from conversation history: {e}")
 
-    if files_dict is not None:
+    return raw
+
+
+def _unwrap_files(raw: dict[str, Any] | None) -> dict[str, str]:
+    """Extract files dict from either old-format (plain dict) or new-format
+    {"version": N, "files": {...}} storage."""
+    if raw is None:
+        return {}
+    # New format with version key
+    if isinstance(raw, dict) and "files" in raw and isinstance(raw.get("files"), dict):
+        return raw["files"]
+    # Old format — raw dict is the files dict itself
+    if isinstance(raw, dict) and "version" not in raw:
+        return {k: v for k, v in raw.items() if isinstance(v, str)}
+    # Fallback
+    return {}
+
+
+async def load_workspace_version(context: Any) -> int:
+    """Return the current workspace version number (0 if not yet versioned)."""
+    raw = await _load_workspace_raw(context)
+    if isinstance(raw, dict) and "version" in raw and isinstance(raw["version"], int):
+        return raw["version"]
+    # Old format or empty — version is 0
+    return 0
+
+
+async def load_workspace_files(context: Any) -> dict[str, str]:
+    """Load workspace files from store (falls back to message history if KV is empty/unsupported).
+    Falls back to project templates if store is empty.
+    """
+    raw = await _load_workspace_raw(context)
+    files_dict = _unwrap_files(raw)
+
+    if files_dict:
         return files_dict
 
     # If both failed/empty, load templates
@@ -465,6 +504,74 @@ print(json.dumps(res))
     except Exception as e:
         logger.log(f"[workspace] Failed to save updated workspace to store: {e}")
 
+
+# ── Inotify Watcher Lifecycle ──
+
+_WATCHER_SCRIPT_PATH = Path(__file__).resolve().parent.parent.parent / "skills" / "fs_watcher" / "watcher.py"
+
+
+async def start_inotify_watcher(tool_registry: ToolRegistry) -> None:
+    """Deploy and start the inotify watcher inside the sandbox container."""
+    # Read the watcher script from local skills directory
+    script_path = _WATCHER_SCRIPT_PATH
+    if not script_path.exists():
+        script_path = Path(__file__).resolve().parent.parent / "skills" / "fs_watcher" / "watcher.py"
+    if not script_path.exists():
+        logger.log("[inotify] Watcher script not found, skipping watcher start")
+        return
+
+    try:
+        watcher_code = script_path.read_text(encoding="utf-8")
+    except Exception as e:
+        logger.log(f"[inotify] Failed to read watcher script: {e}")
+        return
+
+    # Write the watcher script to the sandbox
+    await sandbox_write_file(tool_registry, "/tmp/fs_watcher.py", watcher_code)
+    # Install watchdog and start the watcher in the background
+    await run_sandbox_command(
+        tool_registry,
+        "pip install watchdog -q && nohup python3 /tmp/fs_watcher.py > /tmp/fs_watcher.log 2>&1 &"
+    )
+    # Clear any stale event log
+    await sandbox_write_file(tool_registry, "/tmp/fs_events.jsonl", "")
+    logger.log("[inotify] Watcher started in sandbox")
+
+
+async def read_fs_change_events(tool_registry: ToolRegistry) -> list[dict]:
+    """Read and consume filesystem change events from the sandbox watcher."""
+    content = await sandbox_read_file(tool_registry, "/tmp/fs_events.jsonl")
+    if not content or not content.strip():
+        return []
+
+    events = []
+    for line in content.strip().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            events.append(json.loads(line))
+        except Exception:
+            pass
+
+    # Clear the event log after reading
+    await sandbox_write_file(tool_registry, "/tmp/fs_events.jsonl", "")
+    return events
+
+
+async def stop_inotify_watcher(tool_registry: ToolRegistry) -> None:
+    """Stop the inotify watcher process in the sandbox."""
+    try:
+        pid_str = await sandbox_read_file(tool_registry, "/tmp/fs_watcher.pid")
+        if pid_str and pid_str.strip():
+            pid = pid_str.strip().split("\n")[0].strip()
+            await run_sandbox_command(tool_registry, f"kill {pid} 2>/dev/null")
+    except Exception as e:
+        logger.log(f"[inotify] Failed to stop watcher: {e}")
+
+    # Clean up temp files
+    await run_sandbox_command(tool_registry, "rm -f /tmp/fs_watcher.pid /tmp/fs_watcher.log /tmp/fs_events.jsonl /tmp/fs_watcher.py")
+    logger.log("[inotify] Watcher stopped and temp files cleaned up")
 
 
 def get_available_skills() -> list[str]:
@@ -977,6 +1084,13 @@ async def handler(context: Any) -> AsyncGenerator[str, None]:
     files_dict = await load_workspace_files(context)
     await sync_workspace_to_sandbox(tool_registry, files_dict)
 
+    # ── Inotify: Start filesystem watcher in sandbox ──
+    await start_inotify_watcher(tool_registry)
+
+    # ── Set active tool registry for workspace sync endpoint ──
+    from ..workspace.files import set_active_tool_registry
+    set_active_tool_registry(tool_registry)
+
     # ── Skills: Sync local skills to sandbox ──
     await sync_skills_to_sandbox(tool_registry)
 
@@ -1157,6 +1271,18 @@ async def handler(context: Any) -> AsyncGenerator[str, None]:
                     wave_tasks = [run_single_tool(tc, resolved_args) for tc, resolved_args in ready_calls_with_resolved]
                     wave_outputs = await asyncio.gather(*wave_tasks)
 
+                    # Read inotify change events from sandbox
+                    try:
+                        change_events = await read_fs_change_events(tool_registry)
+                        if change_events:
+                            # Sync immediately and notify frontend
+                            await sync_workspace_from_sandbox(context, tool_registry)
+                            current_version = await load_workspace_version(context)
+                            changed_paths = list(set(e["path"] for e in change_events if "path" in e))
+                            yield sse_event("file_changed", {"version": current_version, "changed": changed_paths})
+                    except Exception as e:
+                        logger.log(f"[workspace] Failed to read fs change events: {e}")
+
                     # 3. Process outputs and emit result/image events
                     for tc_item, result, extraction, duration_ms in wave_outputs:
                         executed_results[tc_item["id"]] = result
@@ -1241,5 +1367,15 @@ async def handler(context: Any) -> AsyncGenerator[str, None]:
             await sync_workspace_from_sandbox(context, tool_registry)
         except Exception as e:
             logger.error(f"[workspace] Failed to sync workspace from sandbox: {e}")
+
+        # ── Inotify: Stop filesystem watcher ──
+        try:
+            await stop_inotify_watcher(tool_registry)
+        except Exception as e:
+            logger.log(f"[inotify] Failed to stop watcher: {e}")
+
+    # ── Clear active tool registry ──
+    from ..workspace.files import clear_active_tool_registry
+    clear_active_tool_registry()
 
     yield sse_event("done", {"stopped": cancelled})
