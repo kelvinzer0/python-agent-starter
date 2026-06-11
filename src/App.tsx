@@ -41,6 +41,7 @@ import {
   deleteFile,
   saveManifest,
 } from './lib/workspaceStore';
+import { fileBridge } from './lib/fileBridge';
 import type { ReplAction } from './components/repl/keymap';
 import Sidebar, { type ChatSessionInfo } from './components/Sidebar';
 import styles from './App.module.css';
@@ -450,6 +451,49 @@ function AppInner() {
     }
   }, []);
 
+  // ── WebSocket File Bridge: connect on conversation change ──
+  useEffect(() => {
+    const cid = conversationId;
+    if (!cid) return;
+
+    fileBridge.connect(cid, {
+      onConnected: () => {
+        console.log('[app] File bridge connected for', cid.slice(0, 8));
+      },
+      onFileWrite: (path, content) => {
+        // Sandbox pushed a file write → update sidebar
+        setWorkspaceFiles(prev => {
+          const exists = prev.some(f => f.name === path);
+          if (exists) {
+            return prev.map(f => f.name === path ? { name: path, size: content.length } : f);
+          }
+          return [...prev, { name: path, size: content.length }];
+        });
+      },
+      onFileDelete: (path) => {
+        // Sandbox pushed a file delete → update sidebar
+        setWorkspaceFiles(prev => prev.filter(f => f.name !== path));
+      },
+      onSyncAll: (files) => {
+        // Full sync from server → update sidebar
+        const fileList = Object.entries(files).map(([name, content]) => ({
+          name,
+          size: content.length,
+        }));
+        if (fileList.length > 0) {
+          setWorkspaceFiles(fileList);
+        }
+      },
+      onDisconnected: () => {
+        console.log('[app] File bridge disconnected');
+      },
+    });
+
+    return () => {
+      fileBridge.disconnect();
+    };
+  }, [conversationId]);
+
   // Restore conversation history whenever active conversationId changes.
   useEffect(() => {
     const saved = getStoredSessions();
@@ -821,29 +865,32 @@ function AppInner() {
             },
 
             onFileChanged: payload => {
+              // Always update version ref
               if (payload.version > knownVersionRef.current) {
                 knownVersionRef.current = payload.version;
-                // Persist version manifest in IndexedDB for efficient reload detection
-                saveManifest(conversationIdRef.current, {}, payload.version).catch(() => {});
+              }
+              // Persist version manifest in IndexedDB for efficient reload detection
+              saveManifest(conversationIdRef.current, {}, payload.version).catch(() => {});
 
-                // If backend sent files_snapshot, save directly to IDB
-                const snapshot = (payload as any).files_snapshot;
-                if (snapshot && typeof snapshot === 'object' && Object.keys(snapshot).length > 0) {
-                  const cid = conversationIdRef.current;
-                  for (const [filepath, content] of Object.entries(snapshot)) {
-                    if (typeof content === 'string') {
-                      saveFile({ conversationId: cid, filepath, content }).catch(() => {});
-                    }
+              // If backend sent files_snapshot, save directly to IDB
+              // ALWAYS process — not gated by version check — because we need
+              // the files in IDB for reload persistence regardless of version.
+              const snapshot = (payload as any).files_snapshot;
+              if (snapshot && typeof snapshot === 'object' && Object.keys(snapshot).length > 0) {
+                const cid = conversationIdRef.current;
+                for (const [filepath, content] of Object.entries(snapshot)) {
+                  if (typeof content === 'string') {
+                    saveFile({ conversationId: cid, filepath, content }).catch(() => {});
                   }
-                  // Update sidebar
-                  setWorkspaceFiles(Object.entries(snapshot).map(([name, content]) => ({
-                    name,
-                    size: (content as string).length,
-                  })));
-                } else {
-                  // Fallback: re-sync from cloud (merges with IDB)
-                  syncFilesFromCloud(conversationIdRef.current);
                 }
+                // Update sidebar
+                setWorkspaceFiles(Object.entries(snapshot).map(([name, content]) => ({
+                  name,
+                  size: (content as string).length,
+                })));
+              } else {
+                // Fallback: re-sync from cloud (merges with IDB)
+                syncFilesFromCloud(conversationIdRef.current);
               }
             },
 

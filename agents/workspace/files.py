@@ -174,65 +174,6 @@ async def _kv_get(kv_store: Any, key: str) -> dict[str, Any] | None:
 
 
 async def _save_raw_to_kv(kv_store: Any, key: str, data: dict[str, Any]) -> None:
-    """Save raw dict to a KV store."""
-    try:
-        if hasattr(kv_store, "put"):
-            res = kv_store.put(key, json.dumps(data) if not isinstance(data, str) else data)
-            if inspect.isawaitable(res):
-                await res
-    except Exception as e:
-        logger.log(f"[workspace] Failed to save to KV key '{key}': {e}")
-
-
-
-    # --- 3. Fallback: context.store KV ---
-    if raw is None:
-        store = getattr(context, "store", None)
-        if store:
-            try:
-                if hasattr(store, "get"):
-                    res = store.get(SHARED_WORKSPACE_KEY)
-                    if inspect.isawaitable(res):
-                        res = await res
-                    if res and isinstance(res, dict):
-                        raw = res
-                        logger.log(f"[workspace] Loaded from context.store shared key")
-            except Exception as e:
-                logger.log(f"[workspace] Failed to get from context.store: {e}")
-
-    # --- 4. Fallback: conversation history ---
-    if raw is None:
-        store = getattr(context, "store", None)
-        if store:
-            try:
-                res = store.get_messages(cid, limit=500, order="asc")
-                if inspect.isawaitable(res):
-                    messages = await res
-                else:
-                    messages = res
-
-                if hasattr(store, "to_openai_input"):
-                    messages = store.to_openai_input(messages)
-
-                for msg in reversed(messages or []):
-                    if isinstance(msg, dict):
-                        role = msg.get("role")
-                        content = msg.get("content")
-                    else:
-                        role = getattr(msg, "role", None)
-                        content = getattr(msg, "content", None)
-                    if role == "system" and isinstance(content, str) and content.startswith("__WORKSPACE_FILES_STATE__:"):
-                        json_str = content[len("__WORKSPACE_FILES_STATE__:"):]
-                        raw = json.loads(json_str)
-                        logger.log(f"[workspace] Loaded from conversation history for {cid}")
-                        break
-            except Exception as e:
-                logger.log(f"[workspace] Failed to load from conversation history: {e}")
-
-    return raw
-
-
-async def _save_raw_to_kv(kv_store: Any, key: str, data: dict[str, Any]) -> None:
     """Save raw dict to a KV store (EdgeOne or context.store)."""
     try:
         if hasattr(kv_store, "put"):

@@ -992,6 +992,9 @@ async def handler(context: Any) -> AsyncGenerator[str, None]:
                 return files_dict[filename]
             return f"Error: File '{filename}' not found in local workspace."
 
+        # Import file bridge for WebSocket-based persistence
+        from .file_bridge import get_bridge
+
         async def local_write_file(filename: str, content: str) -> str:
             filename = _local_path(filename)
             current_files = await load_workspace_files(context)
@@ -1003,6 +1006,10 @@ async def handler(context: Any) -> AsyncGenerator[str, None]:
             if not hasattr(tool_registry, '_modified_files'):
                 tool_registry._modified_files = {}
             tool_registry._modified_files[filename] = content
+            # Push directly to frontend via WebSocket bridge (primary persistence path)
+            bridge = get_bridge()
+            if bridge.is_connected(cid):
+                await bridge.push_file_write(cid, filename, content)
             return f"Successfully wrote file '{filename}' to local workspace."
 
         async def local_delete_file(filename: str) -> str:
@@ -1016,6 +1023,10 @@ async def handler(context: Any) -> AsyncGenerator[str, None]:
                 # Remove from modified files cache
                 if hasattr(tool_registry, '_modified_files'):
                     tool_registry._modified_files.pop(filename, None)
+                # Push delete to frontend via WebSocket bridge
+                bridge = get_bridge()
+                if bridge.is_connected(cid):
+                    await bridge.push_file_delete(cid, filename)
                 return f"Successfully deleted file '{filename}' from local workspace."
             return f"Error: File '{filename}' not found in local workspace."
 
@@ -1452,29 +1463,34 @@ else:
                     except Exception as sync_err:
                         logger.log(f"[sync] Post-toolcall sync failed: {sync_err}")
 
-                    # Emit file_changed with files_snapshot so frontend can persist to IDB
+                    # Emit file_changed with files_snapshot so frontend can persist to IDB.
+                    # ALWAYS emit after tool execution — the frontend needs the snapshot
+                    # for IDB persistence regardless of whether the version changed.
                     local_dirty = getattr(tool_registry, "local_fs_dirty", False)
                     if local_dirty:
                         tool_registry.local_fs_dirty = False
 
-                    # Build files_snapshot: prefer post_files from sandbox sync,
-                    # then try snapshot_workspace (KV), finally use modified_files cache
-                    files_for_snapshot = post_files or {}
+                    # Build files_snapshot: use _modified_files cache first (most reliable
+                    # for local_write_file since it captures exactly what was written),
+                    # then fall back to post_files from sandbox sync, then KV snapshot.
+                    modified_cache = getattr(tool_registry, '_modified_files', {})
+                    files_for_snapshot = dict(modified_cache) if modified_cache else {}
+
+                    if not files_for_snapshot:
+                        files_for_snapshot = post_files or {}
+
                     if not files_for_snapshot:
                         try:
                             files_for_snapshot = await snapshot_workspace(context) or {}
                         except Exception:
                             pass
-                    # If still empty, use the per-turn modified files cache
-                    if not files_for_snapshot:
-                        files_for_snapshot = getattr(tool_registry, '_modified_files', {})
 
                     post_sync_version = await load_workspace_version(context)
-                    if post_sync_version > pre_sync_version or local_dirty:
-                        yield sse_event("file_changed", {
-                            "version": post_sync_version,
-                            "files_snapshot": files_for_snapshot or None,
-                        })
+                    # Always emit file_changed — include full snapshot for IDB persistence
+                    yield sse_event("file_changed", {
+                        "version": post_sync_version,
+                        "files_snapshot": files_for_snapshot or None,
+                    })
 
                     # 3. Process outputs and emit result/image events
                     for tc_item, result, extraction, duration_ms in wave_outputs:
