@@ -378,7 +378,11 @@ async def sync_workspace_from_sandbox(context: Any, tool_registry: ToolRegistry)
 
     logger.log(f"[workspace] Read {len(updated_files)} files from sandbox via tar pipe")
     try:
-        await save_workspace_files(context, updated_files)
+        # Merge: start from current KV, overlay sandbox files on top
+        current_kv = await snapshot_workspace(context)
+        merged = dict(current_kv)
+        merged.update(updated_files)
+        await save_workspace_files(context, merged)
     except Exception as e:
         logger.log(f"[workspace] Failed to save updated workspace to store: {e}")
 
@@ -1101,12 +1105,29 @@ async def handler(context: Any) -> AsyncGenerator[str, None]:
                 await run_sandbox_command_system(tool_registry, f"mkdir -p {parent_dir}")
             success = await sandbox_write_file(tool_registry, path, content)
             if success:
+                # Auto-persist workspace file mutations to KV
+                if path.startswith("/workspace/"):
+                    rel = path[len("/workspace/"):]
+                    current_kv = await snapshot_workspace(context)
+                    current_kv[rel] = content
+                    await save_workspace_files(context, current_kv)
+                    new_ver = await load_workspace_version(context)
+                    # Note: file_changed SSE is emitted in the post-tool-wave block
                 return f"Successfully wrote file '{filename}' in sandbox container."
             return f"Error: Failed to write file '{filename}' in sandbox container."
 
         async def sandbox_delete_file_tool(filename: str) -> str:
             path = filename if filename.startswith("/") else f"/workspace/{filename}"
             await run_sandbox_command_system(tool_registry, f"rm -f {shlex.quote(path)}")
+            # Auto-persist workspace file deletions to KV
+            if path.startswith("/workspace/"):
+                rel = path[len("/workspace/"):]
+                current_kv = await snapshot_workspace(context)
+                if rel in current_kv:
+                    del current_kv[rel]
+                    await save_workspace_files(context, current_kv)
+                    new_ver = await load_workspace_version(context)
+                    # Note: file_changed SSE is emitted in the post-tool-wave block
             return f"Successfully deleted file '{filename}' from sandbox container."
 
         async def sandbox_list_files_tool() -> str:
@@ -1415,6 +1436,7 @@ else:
                     wave_outputs = await asyncio.gather(*wave_tasks)
 
                     # ── Post-toolcall sync: pull sandbox changes back after execution ──
+                    pre_sync_version = await load_workspace_version(context)
                     try:
                         post_files = await sync_workspace_from_sandbox(context, tool_registry)
                         if post_files:
@@ -1422,11 +1444,13 @@ else:
                     except Exception as sync_err:
                         logger.log(f"[sync] Post-toolcall sync failed: {sync_err}")
 
-                    # Check if local workspace was modified by custom tools
-                    if getattr(tool_registry, "local_fs_dirty", False):
+                    # Emit file_changed if workspace version increased (sandbox sync or local_fs_dirty)
+                    local_dirty = getattr(tool_registry, "local_fs_dirty", False)
+                    if local_dirty:
                         tool_registry.local_fs_dirty = False
-                        current_version = await load_workspace_version(context)
-                        yield sse_event("file_changed", {"version": current_version})
+                    post_sync_version = await load_workspace_version(context)
+                    if post_sync_version > pre_sync_version or local_dirty:
+                        yield sse_event("file_changed", {"version": post_sync_version})
 
                     # 3. Process outputs and emit result/image events
                     for tc_item, result, extraction, duration_ms in wave_outputs:
