@@ -99,8 +99,12 @@ class ToolRegistry:
                             elif cmd_val.startswith("cd /workspace &&"):
                                 cmd_val = cmd_val[len("cd /workspace &&"):]
                             
-                            # Run the command directly inside /workspace.
-                            args[ck] = f"cd /workspace && ({cmd_val})"
+                            # Ensure /workspace exists and run inside it; fall back to ~ if not writable.
+                            args[ck] = (
+                                f"mkdir -p /workspace 2>/dev/null; "
+                                f"cd /workspace 2>/dev/null || cd ~; "
+                                f"({cmd_val})"
+                            )
             elif "interpreter" in name_lower or "code" in name_lower:
                 code_keys = ["code", "source", "script", "content"]
                 for ck in code_keys:
@@ -110,8 +114,11 @@ class ToolRegistry:
                         if "import " in code_val or "print(" in code_val or "\n" in code_val or "def " in code_val:
                             prefix = (
                                 "import os\n"
-                                "os.makedirs('/workspace', exist_ok=True)\n"
-                                "os.chdir('/workspace')\n"
+                                "try:\n"
+                                "    os.makedirs('/workspace', exist_ok=True)\n"
+                                "    os.chdir('/workspace')\n"
+                                "except (OSError, PermissionError):\n"
+                                "    pass  # run in default cwd\n"
                             )
                             if "atexit.register(_sync_back)" not in code_val:
                                 args[ck] = prefix + code_val

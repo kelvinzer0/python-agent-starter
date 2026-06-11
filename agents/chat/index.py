@@ -169,8 +169,8 @@ async def run_sandbox_command_system(tool_registry: ToolRegistry, command: str) 
 
 
 async def run_sandbox_command(tool_registry: ToolRegistry, command: str) -> str | None:
-    """Execute a shell command inside the sandbox, running directly in /workspace."""
-    wrapped_command = f"cd /workspace && ({command})"
+    """Execute a shell command inside the sandbox, in /workspace (created if needed)."""
+    wrapped_command = f"mkdir -p /workspace 2>/dev/null; cd /workspace 2>/dev/null || cd ~; ({command})"
     return await run_sandbox_command_system(tool_registry, wrapped_command)
 
 
