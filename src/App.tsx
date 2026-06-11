@@ -842,6 +842,9 @@ function AppInner() {
             },
 
             onRawEvent: ev => {
+              // Debug: track all event types
+              if (!(window as any).__rawEvents) (window as any).__rawEvents = [];
+              (window as any).__rawEvents.push(ev.eventType);
               // Coalesce consecutive text_delta events into a single growing entry,
               // so a multi-paragraph response doesn't flood the trace panel with
               // hundreds of one-token rows.
