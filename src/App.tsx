@@ -607,7 +607,7 @@ function AppInner() {
             }
           },
 
-          onToolCalled: toolName => {
+          onToolCalled: (toolName, filesSnapshot) => {
             const meta = turnMetaRef.current;
             if (!meta) return;
             // Each tool call ends the current text line; the next text_delta
@@ -619,6 +619,31 @@ function AppInner() {
             const toolLine = makeTool(meta.turnId, toolName, { status: 'running' });
             setPendingTurnId(null);
             setLines(prev => [...prev, toolLine]);
+
+            // Merge files snapshot into local workspace state if provided
+            if (filesSnapshot && typeof filesSnapshot === 'object' && Object.keys(filesSnapshot).length > 0) {
+              (async () => {
+                try {
+                  await initLocalFs();
+                  const localFiles = await listLocalFiles();
+                  const snapshotNames = new Set(Object.keys(filesSnapshot));
+                  // Remove local files that no longer exist in the snapshot
+                  for (const lf of localFiles) {
+                    if (!snapshotNames.has(lf.name)) {
+                      await deleteLocalFile(lf.name);
+                    }
+                  }
+                  // Write all snapshot files to local fs
+                  await Promise.all(
+                    Object.entries(filesSnapshot).map(([name, content]) => writeLocalFile(name, content))
+                  );
+                  const updated = await listLocalFiles();
+                  setWorkspaceFiles(updated);
+                } catch (err) {
+                  console.warn('[files_snapshot] Failed to merge snapshot into local fs:', err);
+                }
+              })();
+            }
           },
 
           onToolDebug: (payload: ToolDebugPayload) => {

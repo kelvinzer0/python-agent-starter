@@ -12,7 +12,7 @@ from pathlib import Path
 import inspect
 
 from .._logger import create_logger
-from ..chat.index import load_workspace_files, save_workspace_files, load_workspace_version
+from ..chat.index import load_workspace_files, save_workspace_files, load_workspace_version, _load_workspace_raw, _unwrap_files
 
 logger = create_logger("workspace_files")
 
@@ -29,6 +29,17 @@ def set_active_tool_registry(registry):
 def clear_active_tool_registry():
     global _active_tool_registry
     _active_tool_registry = None
+
+
+async def snapshot_workspace(context: Any) -> dict[str, str]:
+    """Read-only snapshot of the workspace file map from KV.
+
+    Unlike ``load_workspace_files``, this skips template fallback and
+    version-bookkeeping side-effects — it simply returns whatever is
+    currently stored (or an empty dict if nothing is stored yet).
+    """
+    raw = await _load_workspace_raw(context)
+    return _unwrap_files(raw)
 
 
 async def handler(context: Any) -> dict[str, Any]:

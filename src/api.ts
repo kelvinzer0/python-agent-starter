@@ -51,7 +51,7 @@ export interface RawSseEvent {
 
 export interface StreamCallbacks {
   onTextDelta: (delta: string) => void;
-  onToolCalled: (toolName: string) => void;
+  onToolCalled: (toolName: string, filesSnapshot?: Record<string, string> | null) => void;
   onToolDebug?: (payload: ToolDebugPayload) => void;
   onImage: (payload: ImageSsePayload) => void;
   onDone: () => void;
@@ -69,6 +69,7 @@ export interface ToolDebugPayload {
   resultLength?: number;
   durationMs?: number;
   imageCount?: number;
+  files_snapshot?: Record<string, string> | null;
 }
 
 /** Get conversation history for restoring the chat window after page refresh. */
@@ -196,9 +197,11 @@ function dispatchSseChunk(part: string, cb: StreamCallbacks, markDone: () => voi
       case 'text_delta':
         cb.onTextDelta(parsed.delta);
         break;
-      case 'tool_called':
-        cb.onToolCalled(parsed.tool);
+      case 'tool_called': {
+        const fsSnap = typeof parsed?.files_snapshot === 'object' ? (parsed.files_snapshot as Record<string, string> | null) ?? undefined : undefined;
+        cb.onToolCalled(parsed.tool, fsSnap);
         break;
+      }
       case 'tool_debug':
         if (cb.onToolDebug && typeof parsed?.tool === 'string' && typeof parsed?.id === 'string') {
           cb.onToolDebug({
@@ -210,6 +213,7 @@ function dispatchSseChunk(part: string, cb: StreamCallbacks, markDone: () => voi
             resultLength: typeof parsed.resultLength === 'number' ? parsed.resultLength : undefined,
             durationMs: typeof parsed.durationMs === 'number' ? parsed.durationMs : undefined,
             imageCount: typeof parsed.imageCount === 'number' ? parsed.imageCount : undefined,
+            files_snapshot: typeof parsed?.files_snapshot === 'object' ? (parsed.files_snapshot as Record<string, string> | null) ?? undefined : undefined,
           });
         }
         break;

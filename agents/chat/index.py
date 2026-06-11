@@ -40,6 +40,7 @@ from .._session import ChatSession
 from .._tools import build_tools, ToolRegistry, _stringify_result
 from ._stream import LlmRoundResult, sse_event, stream_llm_round, safe_json_preview
 from ._images import extract_images_from_tool_result
+from ..workspace.files import snapshot_workspace
 
 
 logger = create_logger("chat")
@@ -1231,19 +1232,31 @@ async def handler(context: Any) -> AsyncGenerator[str, None]:
                     for tc in ready_calls:
                         pending_calls.remove(tc)
 
-                    # 1. Resolve arguments and emit call events
+                # 1. Resolve arguments and emit call events
+                    # Take a read-only snapshot of workspace files from KV so the
+                    # frontend can update its local state even when the sandbox
+                    # has been reset between requests.
+                    files_snapshot: dict[str, str] | None = None
+                    try:
+                        files_snapshot = await snapshot_workspace(context)
+                        if not files_snapshot:
+                            files_snapshot = None
+                    except Exception as e:
+                        logger.log(f"[orchestrator] Failed to snapshot workspace: {e}")
+
                     ready_calls_with_resolved = []
                     for tc in ready_calls:
                         unresolved_args = tc["arguments"]
                         resolved_args = resolve_placeholders(unresolved_args, executed_results)
                         ready_calls_with_resolved.append((tc, resolved_args))
 
-                        yield sse_event("tool_called", {"tool": tc["name"]})
+                        yield sse_event("tool_called", {"tool": tc["name"], "files_snapshot": files_snapshot})
                         yield sse_event("tool_debug", {
                             "phase": "call",
                             "tool": tc["name"],
                             "id": tc["id"],
                             "argumentsPreview": safe_json_preview(resolved_args, 1200),
+                            "files_snapshot": files_snapshot,
                         })
 
                     # 2. Run execution of ready calls in parallel
