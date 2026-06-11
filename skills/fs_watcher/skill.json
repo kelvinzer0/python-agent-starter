@@ -1,0 +1,5 @@
+{
+  "name": "fs_watcher",
+  "version": "1.0.0",
+  "description": "Inotify-based async file system watcher that detects sandbox file changes in real time and emits JSONL events for the chat handler to consume."
+}

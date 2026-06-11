@@ -3,7 +3,8 @@ import type { ImageAttachment, ImageSsePayload, Message, ReplLine, TurnMeta } fr
 import type { RawSseEvent, ToolDebugPayload, WorkspaceFile } from './api';
 import { 
   fetchConversationHistory, fetchModels, sendMessageStream, stopAgent,
-  fetchWorkspaceFiles, readWorkspaceFile, writeWorkspaceFile, deleteWorkspaceFile
+  fetchWorkspaceFiles, readWorkspaceFile, writeWorkspaceFile, deleteWorkspaceFile,
+  fetchWorkspaceFileStatus, syncFileToSandbox, syncDeleteToSandbox
 } from './api';
 import type { ModelOption } from './api';
 import { 
@@ -319,6 +320,7 @@ function AppInner() {
   const abortCtrlRef = useRef<AbortController | null>(null);
   
   const conversationIdRef = useRef<string>(conversationId);
+  const knownVersionRef = useRef<number>(0);
   const clearInputRef = useRef<() => void>(() => {});
   const setPromptValueRef = useRef<(text: string) => void>(() => {});
   const registerSetPromptValue = useCallback((fn: (text: string) => void) => {
@@ -437,6 +439,23 @@ function AppInner() {
       // Non-critical — model dropdown will show fallback name
     });
   }, []);
+
+  // Poll workspace version for changes when not streaming
+  useEffect(() => {
+    if (loading) return;
+    const interval = setInterval(async () => {
+      const cid = conversationIdRef.current;
+      if (!cid) return;
+      try {
+        const status = await fetchWorkspaceFileStatus(cid);
+        if (status.version > knownVersionRef.current) {
+          knownVersionRef.current = status.version;
+          await syncFilesFromCloud(cid);
+        }
+      } catch {}
+    }, 5000);
+    return () => clearInterval(interval);
+  }, [loading, syncFilesFromCloud]);
 
   // ─── SSE handlers (turn-scoped) ─────────────────────────────────────
   const finishStream = useCallback(() => {
@@ -648,6 +667,13 @@ function AppInner() {
 
           onImage: payload => {
             handleImage(payload);
+          },
+
+          onFileChanged: payload => {
+            if (payload.version > knownVersionRef.current) {
+              knownVersionRef.current = payload.version;
+              syncFilesFromCloud(conversationIdRef.current);
+            }
           },
 
           onRawEvent: ev => {
@@ -866,10 +892,24 @@ function AppInner() {
     try {
       await initLocalFs();
       await writeLocalFile(filename, content);
-      const success = await writeWorkspaceFile(conversationId, filename, content);
-      if (success) {
+      const result = await writeWorkspaceFile(conversationId, filename, content, knownVersionRef.current || undefined);
+      if (result.success) {
+        // Push to sandbox
+        syncFileToSandbox(conversationId, filename, content).catch(() => {});
+        knownVersionRef.current += 1;
         setEditingFile(null);
         await refreshLocalFiles();
+      } else if (result.conflict) {
+        // Version conflict — re-sync and retry once
+        await syncFilesFromCloud(conversationId);
+        const retryResult = await writeWorkspaceFile(conversationId, filename, content);
+        if (retryResult.success) {
+          syncFileToSandbox(conversationId, filename, content).catch(() => {});
+          setEditingFile(null);
+          await refreshLocalFiles();
+        } else {
+          alert('Failed to save file after sync — please try again');
+        }
       } else {
         alert('Failed to save file to cloud');
       }
@@ -878,22 +918,33 @@ function AppInner() {
     } finally {
       setEditorSaving(false);
     }
-  }, [conversationId, refreshLocalFiles]);
+  }, [conversationId, refreshLocalFiles, syncFilesFromCloud]);
 
   const handleDeleteFile = useCallback(async (filename: string) => {
     try {
       await initLocalFs();
       await deleteLocalFile(filename);
-      const success = await deleteWorkspaceFile(conversationId, filename);
-      if (success) {
+      const result = await deleteWorkspaceFile(conversationId, filename, knownVersionRef.current || undefined);
+      if (result.success) {
+        syncDeleteToSandbox(conversationId, filename).catch(() => {});
+        knownVersionRef.current += 1;
         await refreshLocalFiles();
+      } else if (result.conflict) {
+        await syncFilesFromCloud(conversationId);
+        const retryResult = await deleteWorkspaceFile(conversationId, filename);
+        if (retryResult.success) {
+          syncDeleteToSandbox(conversationId, filename).catch(() => {});
+          await refreshLocalFiles();
+        } else {
+          alert('Failed to delete file after sync — please try again');
+        }
       } else {
         alert('Failed to delete file from cloud');
       }
     } catch (err) {
       alert('Failed to delete file');
     }
-  }, [conversationId, refreshLocalFiles]);
+  }, [conversationId, refreshLocalFiles, syncFilesFromCloud]);
 
   const handleCreateFile = useCallback(() => {
     const filename = prompt('Enter new file name:');

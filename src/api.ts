@@ -57,6 +57,7 @@ export interface StreamCallbacks {
   onDone: () => void;
   onError: (err: Error) => void;
   onRawEvent?: (event: RawSseEvent) => void;
+  onFileChanged?: (payload: { version: number; changed?: string[] }) => void;
 }
 
 export interface ToolDebugPayload {
@@ -224,6 +225,14 @@ function dispatchSseChunk(part: string, cb: StreamCallbacks, markDone: () => voi
           });
         }
         break;
+      case 'file_changed':
+        if (cb.onFileChanged) {
+          cb.onFileChanged({
+            version: typeof parsed.version === 'number' ? parsed.version : 0,
+            changed: Array.isArray(parsed.changed) ? parsed.changed : undefined,
+          });
+        }
+        break;
       case 'error':
         cb.onError(new Error(parsed.message || 'agent returned error'));
         break;
@@ -322,8 +331,8 @@ export async function readWorkspaceFile(conversationId: string, filename: string
   }
 }
 
-/** Write/Save a workspace file's content back to the KV store */
-export async function writeWorkspaceFile(conversationId: string, filename: string, content: string): Promise<boolean> {
+/** Fetch workspace file status (metadata + version) from the backend */
+export async function fetchWorkspaceFileStatus(conversationId: string): Promise<{ files: WorkspaceFile[]; version: number }> {
   try {
     const res = await fetch(API.workspaceFiles, {
       method: 'POST',
@@ -331,16 +340,84 @@ export async function writeWorkspaceFile(conversationId: string, filename: strin
         'Content-Type': 'application/json',
         'makers-conversation-id': conversationId,
       },
-      body: JSON.stringify({ action: 'write', filename, content, conversationId }),
+      body: JSON.stringify({ action: 'status', conversationId }),
     });
-    return res.ok;
+    if (!res.ok) return { files: [], version: 0 };
+    const data = await res.json();
+    return {
+      files: Array.isArray(data?.files) ? data.files : [],
+      version: typeof data?.version === 'number' ? data.version : 0,
+    };
+  } catch {
+    return { files: [], version: 0 };
+  }
+}
+
+/** Write/Save a workspace file's content back to the KV store */
+export async function writeWorkspaceFile(conversationId: string, filename: string, content: string, expectedVersion?: number): Promise<{ success: boolean; conflict?: boolean; currentVersion?: number }> {
+  try {
+    const body: Record<string, unknown> = { action: 'write', filename, content, conversationId };
+    if (expectedVersion !== undefined) body.expectedVersion = expectedVersion;
+    const res = await fetch(API.workspaceFiles, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'makers-conversation-id': conversationId,
+      },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) return { success: false };
+    const data = await res.json();
+    if (data?.error === 'version_conflict') return { success: false, conflict: true, currentVersion: data.currentVersion };
+    return { success: data?.success === true };
+  } catch {
+    return { success: false };
+  }
+}
+
+/** Delete a workspace file from the KV store */
+export async function deleteWorkspaceFile(conversationId: string, filename: string, expectedVersion?: number): Promise<{ success: boolean; conflict?: boolean; currentVersion?: number }> {
+  try {
+    const body: Record<string, unknown> = { action: 'delete', filename, conversationId };
+    if (expectedVersion !== undefined) body.expectedVersion = expectedVersion;
+    const res = await fetch(API.workspaceFiles, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'makers-conversation-id': conversationId,
+      },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) return { success: false };
+    const data = await res.json();
+    if (data?.error === 'version_conflict') return { success: false, conflict: true, currentVersion: data.currentVersion };
+    return { success: data?.success === true };
+  } catch {
+    return { success: false };
+  }
+}
+
+/** Sync a file's content to the sandbox (write-through) */
+export async function syncFileToSandbox(conversationId: string, filename: string, content: string): Promise<boolean> {
+  try {
+    const res = await fetch(API.workspaceFiles, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'makers-conversation-id': conversationId,
+      },
+      body: JSON.stringify({ action: 'sync', filename, content, conversationId }),
+    });
+    if (!res.ok) return false;
+    const data = await res.json();
+    return data?.success === true;
   } catch {
     return false;
   }
 }
 
-/** Delete a workspace file from the KV store */
-export async function deleteWorkspaceFile(conversationId: string, filename: string): Promise<boolean> {
+/** Sync a file deletion to the sandbox (write-through) */
+export async function syncDeleteToSandbox(conversationId: string, filename: string): Promise<boolean> {
   try {
     const res = await fetch(API.workspaceFiles, {
       method: 'POST',
@@ -348,9 +425,11 @@ export async function deleteWorkspaceFile(conversationId: string, filename: stri
         'Content-Type': 'application/json',
         'makers-conversation-id': conversationId,
       },
-      body: JSON.stringify({ action: 'delete', filename, conversationId }),
+      body: JSON.stringify({ action: 'sync', filename, action_type: 'delete', conversationId }),
     });
-    return res.ok;
+    if (!res.ok) return false;
+    const data = await res.json();
+    return data?.success === true;
   } catch {
     return false;
   }
