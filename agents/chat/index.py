@@ -999,6 +999,10 @@ async def handler(context: Any) -> AsyncGenerator[str, None]:
             await save_workspace_files(context, current_files)
             await sandbox_write_file(tool_registry, f"/workspace/{filename}", content)
             tool_registry.local_fs_dirty = True
+            # Cache modified files so file_changed can include them in snapshot
+            if not hasattr(tool_registry, '_modified_files'):
+                tool_registry._modified_files = {}
+            tool_registry._modified_files[filename] = content
             return f"Successfully wrote file '{filename}' to local workspace."
 
         async def local_delete_file(filename: str) -> str:
@@ -1009,6 +1013,9 @@ async def handler(context: Any) -> AsyncGenerator[str, None]:
                 await save_workspace_files(context, current_files)
                 await run_sandbox_command_system(tool_registry, f"rm -f /workspace/{shlex.quote(filename)}")
                 tool_registry.local_fs_dirty = True
+                # Remove from modified files cache
+                if hasattr(tool_registry, '_modified_files'):
+                    tool_registry._modified_files.pop(filename, None)
                 return f"Successfully deleted file '{filename}' from local workspace."
             return f"Error: File '{filename}' not found in local workspace."
 
@@ -1449,10 +1456,21 @@ else:
                     local_dirty = getattr(tool_registry, "local_fs_dirty", False)
                     if local_dirty:
                         tool_registry.local_fs_dirty = False
+
+                    # Build files_snapshot: prefer post_files from sandbox sync,
+                    # then try snapshot_workspace (KV), finally use modified_files cache
+                    files_for_snapshot = post_files or {}
+                    if not files_for_snapshot:
+                        try:
+                            files_for_snapshot = await snapshot_workspace(context) or {}
+                        except Exception:
+                            pass
+                    # If still empty, use the per-turn modified files cache
+                    if not files_for_snapshot:
+                        files_for_snapshot = getattr(tool_registry, '_modified_files', {})
+
                     post_sync_version = await load_workspace_version(context)
                     if post_sync_version > pre_sync_version or local_dirty:
-                        # Include the actual file contents in file_changed so frontend IDB gets updated
-                        files_for_snapshot = post_files if post_files else await snapshot_workspace(context)
                         yield sse_event("file_changed", {
                             "version": post_sync_version,
                             "files_snapshot": files_for_snapshot or None,
