@@ -103,10 +103,29 @@ class ToolRegistry:
                             args[ck] = prefix + code_val
 
         try:
+            # Safely inspect parameter signature to filter arguments
+            try:
+                sig = inspect.signature(handler)
+                has_sig = True
+            except (TypeError, ValueError):
+                has_sig = False
+
             if self._use_kwargs.get(name, False):
-                result = handler(**args)
+                if has_sig:
+                    params = sig.parameters
+                    has_var_keyword = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values())
+                    if has_var_keyword:
+                        bound_args = args
+                    else:
+                        bound_args = {k: v for k, v in args.items() if k in params}
+                    result = handler(**bound_args)
+                else:
+                    result = handler(**args)
             else:
-                result = handler(args)
+                if has_sig and len(sig.parameters) == 0:
+                    result = handler()
+                else:
+                    result = handler(args)
 
             if inspect.isawaitable(result):
                 result = await result
