@@ -278,3 +278,68 @@
   from { opacity: 0; }
   to { opacity: 1; }
 }
+
+.sectionHeader {
+  padding: var(--space-2) var(--space-4);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  cursor: pointer;
+  user-select: none;
+  margin-top: var(--space-3);
+  color: var(--color-text-muted);
+  font-size: 10px;
+  text-transform: uppercase;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  transition: color 150ms ease;
+}
+
+.sectionHeader:hover {
+  color: var(--color-text-secondary);
+}
+
+.sectionHeaderTitle {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex: 1;
+}
+
+.folderIcon {
+  color: var(--color-accent);
+}
+
+.addFileBtn {
+  appearance: none;
+  background: transparent;
+  border: none;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px;
+  border-radius: var(--radius-sm);
+  transition: all 150ms ease;
+}
+
+.addFileBtn:hover {
+  color: var(--color-text);
+  background: var(--color-bg-tertiary);
+}
+
+.fileSize {
+  font-size: 9px;
+  color: var(--color-text-muted);
+  margin-right: 24px;
+  font-variant-numeric: tabular-nums;
+}
+
+.sectionSeparator {
+  height: 1px;
+  background: var(--color-border-light);
+  margin: var(--space-3) var(--space-4) var(--space-2);
+  opacity: 0.5;
+}
+

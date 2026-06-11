@@ -303,7 +303,7 @@ async def load_workspace_files(context: Any) -> dict[str, str]:
     """
     cid = context.conversation_id
     store = context.store
-    store_key = f"workspace_files_{cid}"
+    store_key = "workspace_files_global"
     files_dict = None
 
     try:
@@ -344,8 +344,8 @@ async def load_workspace_files(context: Any) -> dict[str, str]:
 
 async def sync_workspace_to_sandbox(tool_registry: ToolRegistry, files_dict: dict[str, str]) -> None:
     """Initialize workspace files inside the stateless sandbox container under /workspace/."""
-    # Ensure root workspace directory is created in the sandbox
-    await run_sandbox_command(tool_registry, "mkdir -p /workspace")
+    # Clean up any existing workspace files in the sandbox to ensure deleted files are removed
+    await run_sandbox_command(tool_registry, "rm -rf /workspace && mkdir -p /workspace")
     
     # Track directories we have already created to avoid duplicate mkdir commands
     created_dirs = {"/workspace"}
@@ -370,7 +370,7 @@ async def sync_workspace_from_sandbox(context: Any, tool_registry: ToolRegistry)
     """Read updated workspace files from the sandbox and save them back to context.store KV."""
     cid = context.conversation_id
     store = context.store
-    store_key = f"workspace_files_{cid}"
+    store_key = "workspace_files_global"
     
     list_script = """import os, json
 res = {}
@@ -1188,7 +1188,10 @@ async def handler(context: Any) -> AsyncGenerator[str, None]:
             save_span.end()
 
     # ── Workspace: save updated files back to context.store KV ──
-    if success and 'tool_registry' in locals() and tool_registry:
-        await sync_workspace_from_sandbox(context, tool_registry)
+    if 'tool_registry' in locals() and tool_registry:
+        try:
+            await sync_workspace_from_sandbox(context, tool_registry)
+        except Exception as e:
+            logger.error(f"[workspace] Failed to sync workspace from sandbox: {e}")
 
     yield sse_event("done", {"stopped": cancelled})

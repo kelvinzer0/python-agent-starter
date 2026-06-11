@@ -39,6 +39,7 @@ export const API = {
   chatStop: '/chat/stop',
   history: '/history',
   models: '/models',
+  workspaceFiles: '/workspace/files',
 } as const;
 
 export interface RawSseEvent {
@@ -271,6 +272,83 @@ export async function stopAgent(conversationId?: string): Promise<boolean> {
       method: 'POST',
       headers,
       body: JSON.stringify({ conversation_id: conversationId }),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+export interface WorkspaceFile {
+  name: string;
+  size: number;
+}
+
+/** Fetch all workspace files metadata from the KV store */
+export async function fetchWorkspaceFiles(conversationId: string): Promise<WorkspaceFile[]> {
+  try {
+    const res = await fetch(API.workspaceFiles, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'makers-conversation-id': conversationId,
+      },
+      body: JSON.stringify({ action: 'list' }),
+    });
+    if (!res.ok) return [];
+    const data = await res.json() as { files?: WorkspaceFile[] };
+    return Array.isArray(data?.files) ? data.files : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Read a workspace file's content from the KV store */
+export async function readWorkspaceFile(conversationId: string, filename: string): Promise<string> {
+  try {
+    const res = await fetch(API.workspaceFiles, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'makers-conversation-id': conversationId,
+      },
+      body: JSON.stringify({ action: 'read', filename }),
+    });
+    if (!res.ok) return '';
+    const data = await res.json() as { content?: string };
+    return typeof data?.content === 'string' ? data.content : '';
+  } catch {
+    return '';
+  }
+}
+
+/** Write/Save a workspace file's content back to the KV store */
+export async function writeWorkspaceFile(conversationId: string, filename: string, content: string): Promise<boolean> {
+  try {
+    const res = await fetch(API.workspaceFiles, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'makers-conversation-id': conversationId,
+      },
+      body: JSON.stringify({ action: 'write', filename, content }),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+/** Delete a workspace file from the KV store */
+export async function deleteWorkspaceFile(conversationId: string, filename: string): Promise<boolean> {
+  try {
+    const res = await fetch(API.workspaceFiles, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'makers-conversation-id': conversationId,
+      },
+      body: JSON.stringify({ action: 'delete', filename }),
     });
     return res.ok;
   } catch {

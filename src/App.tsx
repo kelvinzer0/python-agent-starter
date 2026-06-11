@@ -1,13 +1,17 @@
 import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import type { ImageAttachment, ImageSsePayload, Message, ReplLine, TurnMeta } from './types';
-import type { RawSseEvent, ToolDebugPayload } from './api';
-import { fetchConversationHistory, fetchModels, sendMessageStream, stopAgent } from './api';
+import type { RawSseEvent, ToolDebugPayload, WorkspaceFile } from './api';
+import { 
+  fetchConversationHistory, fetchModels, sendMessageStream, stopAgent,
+  fetchWorkspaceFiles, readWorkspaceFile, writeWorkspaceFile, deleteWorkspaceFile
+} from './api';
 import type { ModelOption } from './api';
 import { I18nProvider, useT } from './i18n';
 import ReplShell from './components/repl/ReplShell';
 import ReplStream from './components/repl/ReplStream';
 import ReplPrompt from './components/repl/ReplPrompt';
 import ImageLightbox from './components/ImageLightbox';
+import FileEditorModal from './components/FileEditorModal';
 import {
   makeDone,
   makeError,
@@ -245,6 +249,18 @@ function AppInner() {
   const [sessions, setSessions] = useState<ChatSessionInfo[]>(() => getStoredSessions());
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
+  // Workspace files states
+  const [workspaceFiles, setWorkspaceFiles] = useState<WorkspaceFile[]>([]);
+  const [editingFile, setEditingFile] = useState<{ name: string; content: string; isNew: boolean } | null>(null);
+  const [editorLoading, setEditorLoading] = useState(false);
+  const [editorSaving, setEditorSaving] = useState(false);
+
+  const loadFiles = useCallback(async (cid: string) => {
+    if (!cid) return;
+    const files = await fetchWorkspaceFiles(cid);
+    setWorkspaceFiles(files);
+  }, []);
+
   const [lines, setLines] = useState<ReplLine[]>([]);
   const [traceEvents, setTraceEvents] = useState<RawSseEvent[]>([]);
   const [loading, setLoading] = useState(false);
@@ -297,6 +313,8 @@ function AppInner() {
   useEffect(() => {
     const saved = getStoredSessions();
     const hasHistory = saved.some(s => s.id === conversationId);
+
+    loadFiles(conversationId);
 
     if (!hasHistory) {
       // Brand-new session → clear chat window, skip network history fetch
@@ -390,7 +408,8 @@ function AppInner() {
     // Idempotent — safe to call when no turn was pending.
     setPendingTurnId(null);
     abortCtrlRef.current = null;
-  }, []);
+    loadFiles(conversationIdRef.current);
+  }, [loadFiles]);
 
   const handleImage = useCallback((payload: ImageSsePayload) => {
     const cid = conversationIdRef.current;
@@ -791,6 +810,64 @@ function AppInner() {
     }
   }, [sessions, handleNewChat]);
 
+  const handleOpenFile = useCallback(async (filename: string) => {
+    setEditingFile({ name: filename, content: '', isNew: false });
+    setEditorLoading(true);
+    try {
+      const content = await readWorkspaceFile(conversationId, filename);
+      setEditingFile(prev => prev ? { ...prev, content } : null);
+    } catch (err) {
+      alert('Failed to read file contents');
+    } finally {
+      setEditorLoading(false);
+    }
+  }, [conversationId]);
+
+  const handleSaveFile = useCallback(async (filename: string, content: string) => {
+    setEditorSaving(true);
+    try {
+      const success = await writeWorkspaceFile(conversationId, filename, content);
+      if (success) {
+        setEditingFile(null);
+        await loadFiles(conversationId);
+      } else {
+        alert('Failed to save file');
+      }
+    } catch (err) {
+      alert('Failed to save file');
+    } finally {
+      setEditorSaving(false);
+    }
+  }, [conversationId, loadFiles]);
+
+  const handleDeleteFile = useCallback(async (filename: string) => {
+    try {
+      const success = await deleteWorkspaceFile(conversationId, filename);
+      if (success) {
+        await loadFiles(conversationId);
+      } else {
+        alert('Failed to delete file');
+      }
+    } catch (err) {
+      alert('Failed to delete file');
+    }
+  }, [conversationId, loadFiles]);
+
+  const handleCreateFile = useCallback(() => {
+    const filename = prompt('Enter new file name:');
+    if (!filename) return;
+    const cleanName = filename.trim();
+    if (!cleanName) return;
+    
+    // Check if file already exists
+    if (workspaceFiles.some(f => f.name.toLowerCase() === cleanName.toLowerCase())) {
+      alert('File already exists');
+      return;
+    }
+    
+    setEditingFile({ name: cleanName, content: '', isNew: true });
+  }, [workspaceFiles]);
+
   const handleResetSession = useCallback(() => {
     handleNewChat();
   }, [handleNewChat]);
@@ -864,6 +941,10 @@ function AppInner() {
         onClose={() => setSidebarOpen(false)}
         theme={theme}
         onThemeChange={setTheme}
+        workspaceFiles={workspaceFiles}
+        onOpenFile={handleOpenFile}
+        onDeleteFile={handleDeleteFile}
+        onCreateFile={handleCreateFile}
       />
       <ReplShell
         modelName={selectedModel || 'Agent'}
@@ -899,6 +980,17 @@ function AppInner() {
         />
       </ReplShell>
       <ImageLightbox url={lightboxUrl} alt={lightboxAlt} onClose={handleCloseLightbox} />
+
+      {editingFile && (
+        <FileEditorModal
+          filename={editingFile.name}
+          initialContent={editingFile.content}
+          loading={editorLoading}
+          saving={editorSaving}
+          onSave={content => handleSaveFile(editingFile.name, content)}
+          onClose={() => setEditingFile(null)}
+        />
+      )}
     </div>
   );
 }

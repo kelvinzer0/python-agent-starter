@@ -1,5 +1,10 @@
+import { useState } from 'react';
 import { useT } from '../i18n';
-import { Sparkle, Plus, ChatTeardropText, Trash, Sun, Moon, Monitor } from '@phosphor-icons/react';
+import { 
+  Sparkle, Plus, ChatTeardropText, Trash, Sun, Moon, Monitor, 
+  FolderOpen, FileText, CaretDown, CaretRight 
+} from '@phosphor-icons/react';
+import type { WorkspaceFile } from '../api';
 import styles from './Sidebar.module.css';
 
 export interface ChatSessionInfo {
@@ -19,6 +24,22 @@ interface SidebarProps {
   onClose: () => void;
   theme: 'light' | 'dark' | 'system';
   onThemeChange: (theme: 'light' | 'dark' | 'system') => void;
+
+  // Workspace files
+  workspaceFiles: WorkspaceFile[];
+  onOpenFile: (filename: string) => void;
+  onDeleteFile: (filename: string) => void;
+  onCreateFile: () => void;
+}
+
+function formatBytes(bytes: number, decimals = 1) {
+  if (bytes === 0) return '0 B';
+  const k = 1024;
+  const dm = decimals < 0 ? 0 : decimals;
+  const sizes = ['B', 'KB', 'MB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  const safeI = Math.min(i, sizes.length - 1);
+  return parseFloat((bytes / Math.pow(k, safeI)).toFixed(dm)) + ' ' + sizes[safeI];
 }
 
 export default function Sidebar({
@@ -32,8 +53,14 @@ export default function Sidebar({
   onClose,
   theme,
   onThemeChange,
+  workspaceFiles,
+  onOpenFile,
+  onDeleteFile,
+  onCreateFile,
 }: SidebarProps) {
   const { t } = useT();
+  const [historyExpanded, setHistoryExpanded] = useState(true);
+  const [filesExpanded, setFilesExpanded] = useState(true);
 
   return (
     <>
@@ -53,43 +80,113 @@ export default function Sidebar({
           {t('repl.session.newChat')}
         </button>
 
-        <div className={styles.listContainer}>
-          {sessions.length === 0 ? (
-            <div className={styles.emptyList}>No history yet</div>
-          ) : (
-            <ul className={styles.list}>
-              {sessions.map(s => (
-                <li
-                  key={s.id}
-                  className={`${styles.item} ${s.id === activeSessionId ? styles.active : ''}`}
-                  onClick={() => {
-                    onSelectSession(s.id);
-                    onClose(); // Auto close on mobile
-                  }}
-                >
-                  <ChatTeardropText size={16} className={styles.chatIcon} />
-                  <span className={styles.itemTitle} title={s.title}>
-                    {s.title || 'Untitled Chat'}
-                  </span>
-                  <button
-                    type="button"
-                    className={styles.deleteBtn}
-                    onClick={e => {
-                      e.stopPropagation(); // Avoid selecting the session when deleting
-                      if (confirm(t('repl.session.confirmDelete' as any) || 'Delete this session?')) {
-                        onDeleteSession(s.id);
-                      }
-                    }}
-                    title="Delete Chat"
-                    aria-label="Delete Chat"
-                  >
-                    <Trash size={14} />
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
+        {/* Chat History Section */}
+        <div className={styles.sectionHeader} onClick={() => setHistoryExpanded(!historyExpanded)}>
+          <div className={styles.sectionHeaderTitle}>
+            {historyExpanded ? <CaretDown size={12} /> : <CaretRight size={12} />}
+            <span>{t('repl.session.history' as any) || 'Chat History'}</span>
+          </div>
         </div>
+
+        {historyExpanded && (
+          <div className={styles.listContainer}>
+            {sessions.length === 0 ? (
+              <div className={styles.emptyList}>No history yet</div>
+            ) : (
+              <ul className={styles.list}>
+                {sessions.map(s => (
+                  <li
+                    key={s.id}
+                    className={`${styles.item} ${s.id === activeSessionId ? styles.active : ''}`}
+                    onClick={() => {
+                      onSelectSession(s.id);
+                      onClose(); // Auto close on mobile
+                    }}
+                  >
+                    <ChatTeardropText size={16} className={styles.chatIcon} />
+                    <span className={styles.itemTitle} title={s.title}>
+                      {s.title || 'Untitled Chat'}
+                    </span>
+                    <button
+                      type="button"
+                      className={styles.deleteBtn}
+                      onClick={e => {
+                        e.stopPropagation(); // Avoid selecting the session when deleting
+                        if (confirm(t('repl.session.confirmDelete' as any) || 'Delete this session?')) {
+                          onDeleteSession(s.id);
+                        }
+                      }}
+                      title="Delete Chat"
+                      aria-label="Delete Chat"
+                    >
+                      <Trash size={14} />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
+
+        <div className={styles.sectionSeparator} />
+
+        {/* Workspace Files Section */}
+        <div className={styles.sectionHeader}>
+          <div className={styles.sectionHeaderTitle} onClick={() => setFilesExpanded(!filesExpanded)}>
+            {filesExpanded ? <CaretDown size={12} /> : <CaretRight size={12} />}
+            <FolderOpen size={14} className={styles.folderIcon} />
+            <span>Workspace Files</span>
+          </div>
+          <button
+            type="button"
+            className={styles.addFileBtn}
+            onClick={onCreateFile}
+            title="Create New File"
+            aria-label="Create New File"
+          >
+            <Plus size={14} />
+          </button>
+        </div>
+
+        {filesExpanded && (
+          <div className={styles.listContainer}>
+            {workspaceFiles.length === 0 ? (
+              <div className={styles.emptyList}>No files in workspace</div>
+            ) : (
+              <ul className={styles.list}>
+                {workspaceFiles.map(f => (
+                  <li
+                    key={f.name}
+                    className={styles.item}
+                    onClick={() => onOpenFile(f.name)}
+                  >
+                    <FileText size={16} className={styles.chatIcon} />
+                    <span className={styles.itemTitle} title={f.name}>
+                      {f.name}
+                    </span>
+                    <span className={styles.fileSize}>
+                      {formatBytes(f.size)}
+                    </span>
+                    <button
+                      type="button"
+                      className={styles.deleteBtn}
+                      onClick={e => {
+                        e.stopPropagation();
+                        if (confirm(`Delete file ${f.name}?`)) {
+                          onDeleteFile(f.name);
+                        }
+                      }}
+                      title="Delete File"
+                      aria-label="Delete File"
+                    >
+                      <Trash size={14} />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
 
         <div className={styles.footer}>
           {sessions.length > 0 && (
@@ -135,5 +232,3 @@ export default function Sidebar({
     </>
   );
 }
-
-
