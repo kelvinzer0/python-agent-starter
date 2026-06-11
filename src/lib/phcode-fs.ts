@@ -207,12 +207,12 @@ export async function deleteLocalFile(filename: string): Promise<void> {
  */
 export function mountLocalFolder(): Promise<string> {
   const fs = getFs();
-  if (!fs || !fs.Mounts || !fs.Mounts.mountNativeFolder) {
+  if (!fs || !fs.mountNativeFolder) {
     return Promise.reject(new Error('Browser FileSystem mounting API not available'));
   }
   
   return new Promise((resolve, reject) => {
-    fs.Mounts.mountNativeFolder((err: any, mountPaths: string[]) => {
+    fs.mountNativeFolder((err: any, mountPaths: string[]) => {
       if (err) {
         reject(err);
       } else if (mountPaths && mountPaths[0]) {
