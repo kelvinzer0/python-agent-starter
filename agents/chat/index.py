@@ -464,9 +464,21 @@ def build_system_prompt(files_dict: dict[str, str]) -> str:
         "Read each tool's schema before calling it; do not assume names or parameters.\n\n"
         "Tool families you may see:\n"
         "- commands / shell: execute shell commands in the sandbox (e.g. date, ls, uname, curl).\n"
-        "- files / fs: read, write, list, check, remove, or create files and directories.\n"
+        "- local files / fs: read, write, list, or delete files in the user's local workspace (`local_read_file`, `local_write_file`, etc.).\n"
+        "- sandbox files / fs: read, write, list, or delete files in the stateless sandboxed container (`sandbox_read_file`, `sandbox_write_file`, etc.).\n"
         "- code_interpreter / interpreter: run code in an isolated interpreter (python, javascript, bash, ...).\n"
         "- browser: fetch web pages, take screenshots, click, type, evaluate scripts.\n\n"
+        "=== TWO FILESYSTEMS ARCHITECTURE ===\n"
+        "You have access to two distinct filesystems:\n"
+        "1. Local Workspace Filesystem (via `local_` tools):\n"
+        "   - These tools (`local_read_file`, `local_write_file`, `local_delete_file`, `local_list_files`) operate on the user's persistent local workspace (shown on their local editor).\n"
+        "   - Any change here updates the files directly on the user's machine.\n"
+        "   - Use these tools to save and manage code, markdown files, configuration, and other project source files.\n"
+        "2. Sandbox Filesystem (via `sandbox_` tools):\n"
+        "   - These tools (`sandbox_read_file`, `sandbox_write_file`, `sandbox_delete_file`, `sandbox_list_files`) operate on the stateless sandboxed execution container.\n"
+        "   - This container is stateless and isolated. Changes here do NOT propagate to the user's local machine unless you explicitly read them and write them to the local workspace.\n"
+        "   - Use this to store temporary build artifacts, compiled code, virtual environments, or run scripts without cluttering the user's host machine.\n"
+        "   - Note: The `/workspace/` directory in the sandbox is initialized with a copy of your local workspace files at the start of the session, but is NOT automatically synced back. To edit code for the user, use the `local_` tools.\n\n"
         "Tool-use rules:\n"
         "1. Use a tool only when it is necessary to answer the user concretely.\n"
         "2. Call tools one at a time and wait for each result before deciding the next step.\n"
@@ -931,6 +943,234 @@ async def handler(context: Any) -> AsyncGenerator[str, None]:
         }
         tool_registry.register("sessions_spawn", spawn_schema, sessions_spawn)
 
+        # ── Local Workspace Tools ──
+        tool_registry.local_fs_dirty = False
+
+        async def local_read_file(filename: str) -> str:
+            files_dict = await load_workspace_files(context)
+            if filename in files_dict:
+                return files_dict[filename]
+            return f"Error: File '{filename}' not found in local workspace."
+
+        async def local_write_file(filename: str, content: str) -> str:
+            current_files = await load_workspace_files(context)
+            current_files[filename] = content
+            await save_workspace_files(context, current_files)
+            await sandbox_write_file(tool_registry, f"/workspace/{filename}", content)
+            tool_registry.local_fs_dirty = True
+            return f"Successfully wrote file '{filename}' to local workspace."
+
+        async def local_delete_file(filename: str) -> str:
+            current_files = await load_workspace_files(context)
+            if filename in current_files:
+                del current_files[filename]
+                await save_workspace_files(context, current_files)
+                import shlex
+                await run_sandbox_command(tool_registry, f"rm -f /workspace/{shlex.quote(filename)}")
+                tool_registry.local_fs_dirty = True
+                return f"Successfully deleted file '{filename}' from local workspace."
+            return f"Error: File '{filename}' not found in local workspace."
+
+        async def local_list_files() -> str:
+            current_files = await load_workspace_files(context)
+            if not current_files:
+                return "Local workspace is empty."
+            files_list = [f"- {name} ({len(content)} bytes)" for name, content in current_files.items()]
+            return "Files in local workspace:\n" + "\n".join(files_list)
+
+        # Register local tools schemas
+        tool_registry.register("local_read_file", {
+            "type": "function",
+            "function": {
+                "name": "local_read_file",
+                "description": "Read the contents of a file in the user's local workspace (frontend filesystem). Use this to inspect code files that the user sees on their machine.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "filename": {
+                            "type": "string",
+                            "description": "The relative path of the file to read (e.g. 'main.py' or 'src/utils.py')."
+                        }
+                    },
+                    "required": ["filename"]
+                }
+            }
+        }, local_read_file)
+
+        tool_registry.register("local_write_file", {
+            "type": "function",
+            "function": {
+                "name": "local_write_file",
+                "description": "Write or update a file in the user's local workspace (frontend filesystem). This immediately syncs and updates the file on the user's computer.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "filename": {
+                            "type": "string",
+                            "description": "The relative path of the file to write (e.g. 'main.py' or 'src/utils.py')."
+                        },
+                        "content": {
+                            "type": "string",
+                            "description": "The full text content to write into the file."
+                        }
+                    },
+                    "required": ["filename", "content"]
+                }
+            }
+        }, local_write_file)
+
+        tool_registry.register("local_delete_file", {
+            "type": "function",
+            "function": {
+                "name": "local_delete_file",
+                "description": "Delete a file from the user's local workspace (frontend filesystem).",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "filename": {
+                            "type": "string",
+                            "description": "The relative path of the file to delete (e.g. 'main.py' or 'src/utils.py')."
+                        }
+                    },
+                    "required": ["filename"]
+                }
+            }
+        }, local_delete_file)
+
+        tool_registry.register("local_list_files", {
+            "type": "function",
+            "function": {
+                "name": "local_list_files",
+                "description": "List all files present in the user's local workspace (frontend filesystem).",
+                "parameters": {
+                    "type": "object",
+                    "properties": {}
+                }
+            }
+        }, local_list_files)
+
+        # ── Sandbox Workspace Tools (for the stateless backend container) ──
+        async def sandbox_read_file_tool(filename: str) -> str:
+            path = filename if filename.startswith("/") else f"/workspace/{filename}"
+            content = await sandbox_read_file(tool_registry, path)
+            if content is None:
+                return f"Error: File '{filename}' not found or could not be read in sandbox."
+            return content
+
+        async def sandbox_write_file_tool(filename: str, content: str) -> str:
+            path = filename if filename.startswith("/") else f"/workspace/{filename}"
+            import os
+            parent_dir = os.path.dirname(path)
+            if parent_dir and parent_dir != "/":
+                await run_sandbox_command(tool_registry, f"mkdir -p {parent_dir}")
+            success = await sandbox_write_file(tool_registry, path, content)
+            if success:
+                return f"Successfully wrote file '{filename}' in sandbox container."
+            return f"Error: Failed to write file '{filename}' in sandbox container."
+
+        async def sandbox_delete_file_tool(filename: str) -> str:
+            path = filename if filename.startswith("/") else f"/workspace/{filename}"
+            import shlex
+            await run_sandbox_command(tool_registry, f"rm -f {shlex.quote(path)}")
+            return f"Successfully deleted file '{filename}' from sandbox container."
+
+        async def sandbox_list_files_tool() -> str:
+            list_script = """import os, json
+target = '/workspace'
+res = []
+if os.path.exists(target):
+    for root, dirs, files in os.walk(target):
+        for file in files:
+            full_path = os.path.join(root, file)
+            rel_path = os.path.relpath(full_path, target)
+            try:
+                size = os.path.getsize(full_path)
+                res.append(f"- {rel_path} ({size} bytes)")
+            except Exception:
+                pass
+if res:
+    print("\\n".join(res))
+else:
+    print("Sandbox workspace is empty.")
+"""
+            await sandbox_write_file(tool_registry, "/tmp/list_sandbox_workspace.py", list_script)
+            output = await run_sandbox_command(tool_registry, "python3 /tmp/list_sandbox_workspace.py")
+            await run_sandbox_command(tool_registry, "rm -f /tmp/list_sandbox_workspace.py")
+            if not output:
+                return "Sandbox workspace (/workspace) is empty or could not be read."
+            return "Files in sandbox workspace:\n" + output.strip()
+
+        # Register sandbox tools schemas
+        tool_registry.register("sandbox_read_file", {
+            "type": "function",
+            "function": {
+                "name": "sandbox_read_file",
+                "description": "Read the contents of a file inside the stateless sandboxed execution container. Use this to inspect runtime outputs, build artifacts, or scripts.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "filename": {
+                            "type": "string",
+                            "description": "The path of the file to read. Relative paths are resolved against /workspace/."
+                        }
+                    },
+                    "required": ["filename"]
+                }
+            }
+        }, sandbox_read_file_tool)
+
+        tool_registry.register("sandbox_write_file", {
+            "type": "function",
+            "function": {
+                "name": "sandbox_write_file",
+                "description": "Write or update a file inside the stateless sandboxed execution container. This file will only exist in the container and will NOT be synced back to the user's host machine.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "filename": {
+                            "type": "string",
+                            "description": "The path of the file to write. Relative paths are resolved against /workspace/."
+                        },
+                        "content": {
+                            "type": "string",
+                            "description": "The full text content to write into the file."
+                        }
+                    },
+                    "required": ["filename", "content"]
+                }
+            }
+        }, sandbox_write_file_tool)
+
+        tool_registry.register("sandbox_delete_file", {
+            "type": "function",
+            "function": {
+                "name": "sandbox_delete_file",
+                "description": "Delete a file from the stateless sandboxed execution container.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "filename": {
+                            "type": "string",
+                            "description": "The path of the file to delete. Relative paths are resolved against /workspace/."
+                        }
+                    },
+                    "required": ["filename"]
+                }
+            }
+        }, sandbox_delete_file_tool)
+
+        tool_registry.register("sandbox_list_files", {
+            "type": "function",
+            "function": {
+                "name": "sandbox_list_files",
+                "description": "List all files present inside the /workspace directory of the stateless sandboxed execution container.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {}
+                }
+            }
+        }, sandbox_list_files_tool)
+
         tools_span.set_attributes({
             "tools.count": len(tool_registry.tools),
             "tools.has_tools": tool_registry.has_tools(),
@@ -942,8 +1182,8 @@ async def handler(context: Any) -> AsyncGenerator[str, None]:
     files_dict = await load_workspace_files(context)
     await sync_workspace_to_sandbox(tool_registry, files_dict)
 
-    # ── Inotify: Start filesystem watcher in sandbox ──
-    await start_inotify_watcher(tool_registry)
+    # ── Inotify: Start filesystem watcher in sandbox (Disabled for stateless sandbox) ──
+    # await start_inotify_watcher(tool_registry)
 
     # ── Set active tool registry for workspace sync endpoint ──
     from ..workspace.files import set_active_tool_registry
@@ -1141,17 +1381,11 @@ async def handler(context: Any) -> AsyncGenerator[str, None]:
                     wave_tasks = [run_single_tool(tc, resolved_args) for tc, resolved_args in ready_calls_with_resolved]
                     wave_outputs = await asyncio.gather(*wave_tasks)
 
-                    # Read inotify change events from sandbox
-                    try:
-                        change_events = await read_fs_change_events(tool_registry)
-                        if change_events:
-                            # Sync immediately and notify frontend
-                            await sync_workspace_from_sandbox(context, tool_registry)
-                            current_version = await load_workspace_version(context)
-                            changed_paths = list(set(e["path"] for e in change_events if "path" in e))
-                            yield sse_event("file_changed", {"version": current_version, "changed": changed_paths})
-                    except Exception as e:
-                        logger.log(f"[workspace] Failed to read fs change events: {e}")
+                    # Check if local workspace was modified by custom tools
+                    if getattr(tool_registry, "local_fs_dirty", False):
+                        tool_registry.local_fs_dirty = False
+                        current_version = await load_workspace_version(context)
+                        yield sse_event("file_changed", {"version": current_version})
 
                     # 3. Process outputs and emit result/image events
                     for tc_item, result, extraction, duration_ms in wave_outputs:
@@ -1234,11 +1468,12 @@ async def handler(context: Any) -> AsyncGenerator[str, None]:
     # ── Workspace: already synced during tool execution via inotify change events; skip redundant end-of-handler sync ──
 
     if 'tool_registry' in locals() and tool_registry:
-        # ── Inotify: Stop filesystem watcher ──
-        try:
-            await stop_inotify_watcher(tool_registry)
-        except Exception as e:
-            logger.log(f"[inotify] Failed to stop watcher: {e}")
+        # ── Inotify: Stop filesystem watcher (Disabled for stateless sandbox) ──
+        # try:
+        #     await stop_inotify_watcher(tool_registry)
+        # except Exception as e:
+        #     logger.log(f"[inotify] Failed to stop watcher: {e}")
+        pass
 
     # ── Clear active tool registry ──
     from ..workspace.files import clear_active_tool_registry

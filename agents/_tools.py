@@ -138,9 +138,6 @@ def build_tools(context: Any, logger: Any = None) -> ToolRegistry:
     if inspect.isawaitable(raw_tools):
         raise RuntimeError("context.tools.all() returned an awaitable; expected a list")
 
-    if logger:
-        logger.log(f"[tools] raw_tools count: {len(raw_tools) if raw_tools else 0}")
-
     for item in raw_tools or []:
         name = _attr(item, "name") or _nested_attr(item, "function", "name")
         handler = _attr(item, "execute") or _attr(item, "handler") or _attr(item, "invoke")
@@ -154,9 +151,17 @@ def build_tools(context: Any, logger: Any = None) -> ToolRegistry:
             continue
 
         schema = _build_schema(item, name)
-        registry.register(name, schema, handler)
-        if logger:
-            logger.log(f"[tools] registered: {name}")
+        name_lower = name.lower()
+        if "file" in name_lower or "fs" in name_lower:
+            # Register internally so helpers can execute them, but hide from the LLM
+            registry._handlers[name] = handler
+            registry._use_kwargs[name] = _should_call_with_kwargs(handler)
+            if logger:
+                logger.log(f"[tools] registered internally (hidden from LLM): {name}")
+        else:
+            registry.register(name, schema, handler)
+            if logger:
+                logger.log(f"[tools] registered: {name}")
 
     return registry
 
