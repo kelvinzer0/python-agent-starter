@@ -322,6 +322,21 @@ async def sync_workspace_to_sandbox(tool_registry: ToolRegistry, files_dict: dic
             logger.log(f"[workspace] Failed to sync {filename} to sandbox")
 
 
+async def ensure_sandbox_initialized(context: Any, tool_registry: ToolRegistry) -> None:
+    """Check if the sandbox container has lost its workspace or skills, and reinitialize on the fly if needed."""
+    res = await run_sandbox_command(tool_registry, "ls -la /tmp/.sandbox_init 2>/dev/null")
+    if not res or "/tmp/.sandbox_init" not in res:
+        logger.log("[sandbox] Sandbox reset or sentinel missing. Reinitializing workspace and skills...")
+        # Re-sync workspace
+        files_dict = await load_workspace_files(context)
+        await sync_workspace_to_sandbox(tool_registry, files_dict)
+        # Re-sync skills
+        await sync_skills_to_sandbox(tool_registry)
+        # Write the sentinel file
+        await sandbox_write_file(tool_registry, "/tmp/.sandbox_init", "1")
+        logger.log("[sandbox] Sandbox successfully reinitialized!")
+
+
 async def sync_workspace_from_sandbox(context: Any, tool_registry: ToolRegistry) -> None:
     """Read updated workspace files from the sandbox and save them back to context.store KV."""
     cid = context.conversation_id
@@ -630,6 +645,9 @@ async def run_subagent_loop(context: Any, role: str, objective: str, tool_regist
                         tool_result = await tool_registry.execute(tc_item["function"]["name"], resolved_args_str)
                         return tc_item, tool_result
                         
+                    # Ensure sandbox is still initialized before running tools
+                    await ensure_sandbox_initialized(context, tool_registry)
+
                     wave_tasks = [run_subagent_tool(tc, resolved_args) for tc, resolved_args in ready_calls_with_resolved]
                     wave_outputs = await asyncio.gather(*wave_tasks)
                     
@@ -1178,19 +1196,13 @@ else:
     finally:
         tools_span.end()
 
-    # ── Workspace: Load files and initialize sandbox ──
+    # ── Workspace & Skills: Ensure sandbox is initialized with sentinel ──
     files_dict = await load_workspace_files(context)
-    await sync_workspace_to_sandbox(tool_registry, files_dict)
-
-    # ── Inotify: Start filesystem watcher in sandbox (Disabled for stateless sandbox) ──
-    # await start_inotify_watcher(tool_registry)
+    await ensure_sandbox_initialized(context, tool_registry)
 
     # ── Set active tool registry for workspace sync endpoint ──
     from ..workspace.files import set_active_tool_registry
     set_active_tool_registry(tool_registry)
-
-    # ── Skills: Sync local skills to sandbox ──
-    await sync_skills_to_sandbox(tool_registry)
 
     # Build messages list: system prompt + history + current user message
     messages: list[dict[str, Any]] = (
@@ -1376,6 +1388,9 @@ else:
                             return tc_item, result, extraction, duration_ms
                         finally:
                             ts.end()
+
+                    # Ensure sandbox is still initialized before running tools
+                    await ensure_sandbox_initialized(context, tool_registry)
 
                     # Execute wave in parallel
                     wave_tasks = [run_single_tool(tc, resolved_args) for tc, resolved_args in ready_calls_with_resolved]
