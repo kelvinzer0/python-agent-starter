@@ -77,7 +77,15 @@ def find_fs_tool_name(tool_registry: ToolRegistry, operation: str) -> str | None
 
 
 def get_tool_param_keys(tool_registry: ToolRegistry, tool_name: str) -> list[str]:
-    """Retrieve parameter keys for the specified tool to map argument keys correctly."""
+    """Retrieve parameter keys for the specified tool.
+    Tries handler signature first (works for internal/hidden tools),
+    then falls back to schema properties in tool_registry.tools.
+    """
+    # Primary: inspect handler signature (works for internal tools not in tool_registry.tools)
+    params = tool_registry.get_params(tool_name)
+    if params:
+        return params
+    # Fallback: parse OpenAI schema properties
     for t in tool_registry.tools:
         if t["function"]["name"] == tool_name:
             properties = t["function"]["parameters"].get("properties", {})
@@ -307,21 +315,33 @@ except Exception as e:
 
 
 async def sync_workspace_to_sandbox(tool_registry: ToolRegistry, files_dict: dict[str, str]) -> None:
-    """Push workspace files to sandbox /workspace/ using direct file writes."""
+    """Push workspace files to sandbox /workspace/ using Python-based shell writes.
+    
+    Uses base64+Python instead of platform file tool to avoid parameter-name
+    detection issues with internal (hidden) platform tools.
+    """
     # Clean up any existing workspace files to ensure deleted files are removed
     await run_sandbox_command_system(tool_registry, "rm -rf /workspace && mkdir -p /workspace")
 
     if not files_dict:
         return
 
-    # Write each file directly via platform tool
+    # Write files via Python embedded in shell commands.
+    # Content is base64-encoded to avoid any quoting/escaping issues with arbitrary text.
     for filepath, content in files_dict.items():
-        parent_dir = os.path.dirname(f"/workspace/{filepath}")
-        if parent_dir and parent_dir != "/workspace":
-            await run_sandbox_command_system(tool_registry, f"mkdir -p {shlex.quote(parent_dir)}")
-        await sandbox_write_file(tool_registry, f"/workspace/{filepath}", content)
+        safe_path = f"/workspace/{filepath}"
+        content_b64 = base64.b64encode(content.encode("utf-8")).decode("ascii")
+        py_cmd = (
+            f"python3 -c \""
+            f"import base64, os; "
+            f"p='{safe_path}'; "
+            f"os.makedirs(os.path.dirname(p) or '.', exist_ok=True); "
+            f"open(p,'wb').write(base64.b64decode('{content_b64}'))"
+            f"\""
+        )
+        await run_sandbox_command_system(tool_registry, py_cmd)
 
-    logger.log(f"[workspace] Synced {len(files_dict)} files to sandbox via direct write")
+    logger.log(f"[workspace] Synced {len(files_dict)} files to sandbox via Python writes")
 
 
 async def ensure_sandbox_initialized(context: Any, tool_registry: ToolRegistry) -> None:
@@ -1518,18 +1538,55 @@ else:
         finally:
             save_span.end()
 
-    # ── Workspace: Sync back changes from sandbox workspace to KV store ──
+
+    # ── Workspace: Merge sandbox changes back to KV (never overwrite user's external edits) ──
     if 'tool_registry' in locals() and tool_registry:
         try:
-            logger.log("[workspace] Syncing workspace changes from sandbox back to KV...")
-            await sync_workspace_from_sandbox(context, tool_registry)
-            # Read the new version and update the sandbox sentinel
+            logger.log("[workspace] Merging sandbox workspace changes back to KV...")
+            sandbox_files = await sync_workspace_from_sandbox(context, tool_registry)
+
+            if sandbox_files is not None:
+                # Load current KV state (may include user's frontend edits made during this turn)
+                current_kv = await load_workspace_files(context)
+                # pre-turn snapshot was loaded at handler start into files_dict
+                pre_turn = files_dict  # dict captured at top of handler
+
+                merged = dict(current_kv)  # start from latest KV (includes user edits)
+                agent_changed = 0
+                for fname, sb_content in sandbox_files.items():
+                    pre_content = pre_turn.get(fname)
+                    kv_content = current_kv.get(fname)
+                    # Agent changed this file if sandbox content differs from pre-turn snapshot
+                    agent_modified = sb_content != pre_content
+                    # User externally edited if KV content differs from pre-turn snapshot
+                    user_modified = kv_content != pre_content
+                    if agent_modified and not user_modified:
+                        # Safe to take agent's version
+                        merged[fname] = sb_content
+                        agent_changed += 1
+                    elif agent_modified and user_modified:
+                        # Conflict: agent and user both changed — prefer user's edit (KV wins)
+                        logger.log(f"[workspace] Merge conflict on '{fname}': keeping user's KV version")
+                    # else: neither changed, or only user changed → KV already correct
+
+                # Also remove files that agent deleted (existed in pre-turn but not in sandbox)
+                for fname in list(pre_turn.keys()):
+                    if fname not in sandbox_files and fname in merged:
+                        # Agent deleted it (and user didn't re-create it externally)
+                        if current_kv.get(fname) == pre_turn.get(fname):
+                            del merged[fname]
+                            agent_changed += 1
+
+                if agent_changed > 0:
+                    await save_workspace_files(context, merged)
+                    logger.log(f"[workspace] Merged {agent_changed} agent-changed files into KV")
+
+            # Update sandbox version sentinel and notify frontend
             current_version = await load_workspace_version(context)
             await sandbox_write_file(tool_registry, "/tmp/.workspace_version", str(current_version))
-            # Emit file changed event so frontend refreshes its view
             yield sse_event("file_changed", {"version": current_version})
         except Exception as e:
-            logger.error(f"[workspace] Failed to sync workspace from sandbox at end of turn: {e}")
+            logger.error(f"[workspace] Failed to merge workspace from sandbox at end of turn: {e}")
 
     # ── Clear active tool registry ──
     from ..workspace.files import clear_active_tool_registry

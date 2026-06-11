@@ -25,6 +25,17 @@ class ToolRegistry:
     def has_tools(self) -> bool:
         return len(self.tools) > 0
 
+    def get_params(self, name: str) -> list[str]:
+        """Return parameter names for any tool (public or internal) by inspecting handler signature."""
+        handler = self._handlers.get(name)
+        if not handler:
+            return []
+        try:
+            sig = inspect.signature(handler)
+            return list(sig.parameters.keys())
+        except (TypeError, ValueError):
+            return []
+
     def register(self, name: str, schema: dict[str, Any], handler: Any) -> None:
         """Register a tool with its schema and handler."""
         if name in self._handlers:
