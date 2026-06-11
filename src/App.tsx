@@ -744,9 +744,6 @@ function AppInner() {
             },
 
             onToolDebug: (payload: ToolDebugPayload) => {
-              // Debug: store in window for Playwright to read
-              if (!(window as any).__toolDebugLogs) (window as any).__toolDebugLogs = [];
-              (window as any).__toolDebugLogs.push({ phase: payload.phase, tool: payload.tool, hasArgs: !!payload.argumentsPreview });
               if (payload.phase === 'call') {
                 // Merge call-phase data into the most recent matching tool line
                 const toolName = payload.tool;
@@ -776,17 +773,11 @@ function AppInner() {
                     const args = JSON.parse(payload.argumentsPreview);
                     const filename = args.filename || args.file || args.path;
                     const content = args.content || args.data || args.text;
-                    (window as any).__idbPersistDebug = { filename, hasContent: typeof content === 'string', contentLen: content?.length };
                     if (filename && typeof content === 'string') {
                       // Strip /workspace/ prefix if present
                       const filepath = filename.replace(/^\/workspace\//, '');
                       const cid = conversationIdRef.current;
-                      (window as any).__idbPersistDebug2 = { cid, filepath };
-                      saveFile({ conversationId: cid, filepath, content }).then(() => {
-                        (window as any).__idbPersistDebug3 = 'OK';
-                      }).catch((err) => {
-                        (window as any).__idbPersistDebug3 = 'FAIL:' + String(err);
-                      });
+                      saveFile({ conversationId: cid, filepath, content }).catch(() => {});
                       // Update sidebar file list
                       setWorkspaceFiles(prev => {
                         const exists = prev.some(f => f.name === filepath);
@@ -834,17 +825,14 @@ function AppInner() {
                 knownVersionRef.current = payload.version;
                 // Persist version manifest in IndexedDB for efficient reload detection
                 saveManifest(conversationIdRef.current, {}, payload.version).catch(() => {});
-                // NOTE: Do NOT call syncFilesFromCloud here — it fetches from
-                // the backend which may return stale/template data and overwrite
-                // the IDB entries that onToolCalled already persisted.
-                // The sidebar file list is already updated by onToolCalled.
+                // Re-sync from cloud — syncFilesFromCloud now MERGES with IDB
+                // (IDB files take priority, cloud only adds missing files).
+                // Backend has already saved updated files via sync_workspace_from_sandbox.
+                syncFilesFromCloud(conversationIdRef.current);
               }
             },
 
             onRawEvent: ev => {
-              // Debug: track all event types
-              if (!(window as any).__rawEvents) (window as any).__rawEvents = [];
-              (window as any).__rawEvents.push(ev.eventType);
               // Coalesce consecutive text_delta events into a single growing entry,
               // so a multi-paragraph response doesn't flood the trace panel with
               // hundreds of one-token rows.
