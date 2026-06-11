@@ -12,9 +12,153 @@ from pathlib import Path
 import inspect
 
 from .._logger import create_logger
-from ..chat.index import load_workspace_files, save_workspace_files, load_workspace_version, _load_workspace_raw, _unwrap_files
 
 logger = create_logger("workspace_files")
+
+# ── Workspace Persistence & Synchronization ──
+
+async def _load_workspace_raw(context: Any) -> dict[str, Any] | None:
+    """Load raw workspace data from store. Returns the stored object (may be
+    old-format plain dict or new-format {"version": N, "files": {...}})."""
+    cid = context.conversation_id
+    store = context.store
+    if not cid or not store:
+        return None
+
+    raw = None
+
+    # Try standard KV first
+    try:
+        if hasattr(store, "get"):
+            res = store.get("workspace_files_global")
+            if inspect.isawaitable(res):
+                res = await res
+            if res and isinstance(res, dict):
+                raw = res
+    except Exception as e:
+        logger.log(f"[workspace] Failed to get files from KV store: {e}")
+
+    # Fallback: Load from conversation history
+    if raw is None:
+        try:
+            res = store.get_messages(cid, limit=500, order="desc")
+            if inspect.isawaitable(res):
+                messages = await res
+            else:
+                messages = res
+
+            for msg in messages or []:
+                role = getattr(msg, "role", None) or (msg.get("role") if isinstance(msg, dict) else None)
+                content = getattr(msg, "content", None) or (msg.get("content") if isinstance(msg, dict) else None)
+                if role == "system" and isinstance(content, str) and content.startswith("__WORKSPACE_FILES_STATE__:"):
+                    json_str = content[len("__WORKSPACE_FILES_STATE__:"):]
+                    raw = json.loads(json_str)
+                    logger.log(f"[workspace] Loaded workspace from conversation history for {cid}")
+                    break
+        except Exception as e:
+            logger.log(f"[workspace] Failed to load workspace from conversation history: {e}")
+
+    return raw
+
+
+def _unwrap_files(raw: dict[str, Any] | None) -> dict[str, str]:
+    """Extract files dict from either old-format (plain dict) or new-format
+    {"version": N, "files": {...}} storage."""
+    if raw is None:
+        return {}
+    # New format with version key
+    if isinstance(raw, dict) and "files" in raw and isinstance(raw.get("files"), dict):
+        return raw["files"]
+    # Old format — raw dict is the files dict itself
+    if isinstance(raw, dict) and "version" not in raw:
+        return {k: v for k, v in raw.items() if isinstance(v, str)}
+    # Fallback
+    return {}
+
+
+async def load_workspace_version(context: Any) -> int:
+    """Return the current workspace version number (0 if not yet versioned)."""
+    raw = await _load_workspace_raw(context)
+    if isinstance(raw, dict) and "version" in raw and isinstance(raw["version"], int):
+        return raw["version"]
+    # Old format or empty — version is 0
+    return 0
+
+
+async def load_workspace_files(context: Any) -> dict[str, str]:
+    """Load workspace files from store (falls back to message history if KV is empty/unsupported).
+    Falls back to project templates if store is empty.
+    """
+    raw = await _load_workspace_raw(context)
+    files_dict = _unwrap_files(raw)
+
+    if files_dict:
+        return files_dict
+
+    # If both failed/empty, load templates
+    logger.log(f"[workspace] No files in store for {context.conversation_id}. Loading default templates.")
+    files_dict = {}
+
+    project_root = Path(__file__).resolve().parent.parent.parent
+    workspace_dir = project_root / "workspace"
+    if not workspace_dir.exists():
+        workspace_dir = Path(__file__).resolve().parent.parent / "workspace"
+    if not workspace_dir.exists():
+        workspace_dir = Path.cwd() / "workspace"
+
+    if workspace_dir.exists() and workspace_dir.is_dir():
+        for filepath in workspace_dir.glob("**/*"):
+            if filepath.is_file():
+                rel_path = str(filepath.relative_to(workspace_dir))
+                try:
+                    content = filepath.read_text(encoding="utf-8").strip()
+                    files_dict[rel_path] = content
+                except Exception:
+                    pass
+    return files_dict
+
+
+async def save_workspace_files(context: Any, files_dict: dict[str, str]) -> None:
+    """Save workspace files to store (falls back to message history if KV is not supported).
+    Stores {"version": N, "files": {...}} with an incrementing version number.
+    """
+    cid = context.conversation_id
+    store = context.store
+    if not cid or not store:
+        return
+
+    # Determine current version before saving
+    current_version = await load_workspace_version(context)
+    new_version = current_version + 1
+    wrapped = {"version": new_version, "files": files_dict}
+
+    # Try standard KV first (in case it gets supported or in other environments)
+    try:
+        if hasattr(store, "put"):
+            res = store.put("workspace_files_global", wrapped)
+            if inspect.isawaitable(res):
+                await res
+            logger.log(f"[workspace] Saved workspace v{new_version} to KV store for {cid}")
+            return
+        elif hasattr(store, "set"):
+            res = store.set("workspace_files_global", wrapped)
+            if inspect.isawaitable(res):
+                await res
+            logger.log(f"[workspace] Saved workspace v{new_version} to KV store for {cid}")
+            return
+    except Exception as e:
+        logger.log(f"[workspace] KV store save failed, falling back to messages: {e}")
+
+    # Fallback: Save as a system message in conversation history
+    try:
+        content_str = "__WORKSPACE_FILES_STATE__:" + json.dumps(wrapped)
+        res = store.append_message(cid, "system", content_str)
+        if inspect.isawaitable(res):
+            await res
+        logger.log(f"[workspace] Saved workspace v{new_version} to conversation history for {cid}")
+    except Exception as e:
+        logger.log(f"[workspace] Failed to save workspace to conversation history: {e}")
+
 
 # ── Active tool registry reference for sandbox sync ──
 
@@ -53,8 +197,7 @@ async def handler(context: Any) -> dict[str, Any]:
     filename = body.get("filename")
     content = body.get("content")
 
-    # We reuse load_workspace_files from agents.chat.index to get the current workspace dict
-    # (which falls back to templates if not in store yet)
+    # Load the current workspace dict (falls back to templates if not in store yet)
     files_dict = await load_workspace_files(context)
 
     if action == "list":
