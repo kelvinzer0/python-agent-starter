@@ -1,5 +1,3 @@
-import '@phcode/fs/dist/virtualfs.js';
-
 // Get the global fs object initialized by virtualfs.js
 const getFs = (): any => {
   return (window as any).fs;
