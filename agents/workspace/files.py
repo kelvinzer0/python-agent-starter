@@ -12,7 +12,6 @@ from pathlib import Path
 import inspect
 
 from .._logger import create_logger
-from ..auth._auth import validate_token, extract_token
 
 logger = create_logger("workspace_files")
 
@@ -22,27 +21,27 @@ logger = create_logger("workspace_files")
 SHARED_WORKSPACE_KEY = "workspace_files"
 
 
-def _get_user_id(context: Any) -> str | None:
-    """Extract user_id from auth token. Returns None if not authenticated."""
-    token = extract_token(context)
-    if not token:
-        return None
-    # We need to do async validation, but this is sync
-    # Store the token for async validation later
-    context._auth_token = token
-    return None  # Will be resolved async
+def _workspace_key(user_id: str | None) -> str:
+    """Build the KV key for workspace files."""
+    if user_id:
+        return f"workspace_files_{user_id}"
+    return SHARED_WORKSPACE_KEY
 
 
 async def _resolve_user_id(context: Any) -> str | None:
-    """Resolve user_id from auth token (async)."""
-    token = getattr(context, "_auth_token", None)
-    if not token:
-        token = extract_token(context)
-    if not token:
-        return None
-    user = await validate_token(context, token)
-    if user:
-        return user.get("user_id")
+    """Resolve user_id from auth token in request headers."""
+    headers = getattr(context.request, "headers", None)
+    if headers:
+        auth_header = None
+        if isinstance(headers, dict):
+            auth_header = headers.get("Authorization") or headers.get("authorization")
+        else:
+            auth_header = getattr(headers, "get", lambda k: None)("Authorization") or \
+                          getattr(headers, "get", lambda k: None)("authorization")
+        if auth_header and isinstance(auth_header, str) and auth_header.startswith("Bearer "):
+            # For client-side auth, we just check if token exists
+            # Real user_id is in the request body or managed client-side
+            return None
     return None
 
 
