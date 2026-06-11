@@ -126,6 +126,9 @@ async def load_workspace_files(context: Any) -> dict[str, str]:
         for filepath in workspace_dir.glob("**/*"):
             if filepath.is_file():
                 rel_path = str(filepath.relative_to(workspace_dir))
+                # Skip python files, pycache, and system hidden files/folders
+                if rel_path.endswith(".py") or rel_path.startswith("__") or "pycache" in rel_path or "/__" in rel_path or rel_path.startswith("."):
+                    continue
                 try:
                     content = filepath.read_text(encoding="utf-8").strip()
                     files_dict[rel_path] = content
@@ -224,6 +227,12 @@ async def handler(context: Any) -> dict[str, Any]:
 
     # Load the current workspace dict (falls back to templates if not in store yet)
     files_dict = await load_workspace_files(context)
+
+    # Filter out python files, system files, and __pycache__ from the workspace view
+    files_dict = {
+        k: v for k, v in files_dict.items()
+        if not (k.endswith(".py") or k.startswith("__") or "pycache" in k or k == "files.py" or k.startswith("."))
+    }
 
     if action == "list":
         # Return list of files
