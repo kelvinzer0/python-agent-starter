@@ -17,6 +17,10 @@ logger = create_logger("workspace_files")
 
 # ── Workspace Persistence & Synchronization ──
 
+# Shared workspace key: all conversations share the same workspace files.
+# This ensures changes persist across conversations and page reloads.
+SHARED_WORKSPACE_KEY = "workspace_files"
+
 
 def _get_kv_store(context: Any):
     """Resolve the EdgeOne KV binding from context.env."""
@@ -31,7 +35,13 @@ def _get_kv_store(context: Any):
 
 async def _load_workspace_raw(context: Any) -> dict[str, Any] | None:
     """Load raw workspace data from store. Returns the stored object (may be
-    old-format plain dict or new-format {"version": N, "files": {...}})."""
+    old-format plain dict or new-format {"version": N, "files": {...}}).
+
+    Resolution order:
+      1. Shared key (workspace_files) — persists across all conversations
+      2. Legacy per-conversation key (workspace_files_{cid}) — backward compat
+      3. Conversation history fallback
+    """
 
     # Resolve conversation_id dynamically from context or request body
     cid = getattr(context, "conversation_id", None)
@@ -44,16 +54,16 @@ async def _load_workspace_raw(context: Any) -> dict[str, Any] | None:
         logger.log(f"[DEBUG _load_workspace_raw] Failed to resolve conversation ID! context={context}")
         return None
 
-    kv_key = f"workspace_files_{cid}"
     logger.log(f"[DEBUG _load_workspace_raw] cid={cid}")
-    raw = None
 
-    # Try EdgeOne KV store first (context.env.KV_STORE)
     kv_store = _get_kv_store(context)
+
+    # --- 1. Try shared workspace key first (cross-conversation persistence) ---
+    raw = None
     if kv_store:
         try:
             if hasattr(kv_store, "get"):
-                res = kv_store.get(kv_key)
+                res = kv_store.get(SHARED_WORKSPACE_KEY)
                 if inspect.isawaitable(res):
                     res = await res
                 if res is not None:
@@ -62,56 +72,87 @@ async def _load_workspace_raw(context: Any) -> dict[str, Any] | None:
                     elif isinstance(res, dict):
                         raw = res
                     if raw is not None:
-                        logger.log(f"[DEBUG _load_workspace_raw] Successfully loaded from EdgeOne KV store")
+                        logger.log(f"[workspace] Loaded from shared key '{SHARED_WORKSPACE_KEY}'")
         except Exception as e:
-            logger.log(f"[DEBUG _load_workspace_raw] Failed to get files from EdgeOne KV store: {e}")
+            logger.log(f"[workspace] Failed to get from shared key: {e}")
 
-    # Fallback: Try context.store (ConversationMemory) for backward compatibility
+    # --- 2. Fallback: legacy per-conversation key (backward compat) ---
+    if raw is None:
+        legacy_key = f"workspace_files_{cid}"
+        if kv_store:
+            try:
+                if hasattr(kv_store, "get"):
+                    res = kv_store.get(legacy_key)
+                    if inspect.isawaitable(res):
+                        res = await res
+                    if res is not None:
+                        if isinstance(res, str):
+                            raw = json.loads(res)
+                        elif isinstance(res, dict):
+                            raw = res
+                        if raw is not None:
+                            logger.log(f"[workspace] Migrating from legacy key '{legacy_key}' to shared key")
+                            # Migrate: save to shared key for future loads
+                            await _save_raw_to_kv(kv_store, SHARED_WORKSPACE_KEY, raw)
+            except Exception as e:
+                logger.log(f"[workspace] Failed to get from legacy key: {e}")
+
+    # --- 3. Fallback: context.store KV ---
     if raw is None:
         store = getattr(context, "store", None)
         if store:
-            logger.log(f"[DEBUG _load_workspace_raw] cid={cid}, store_type={type(store)}")
-
-            # Try standard KV on context.store
             try:
                 if hasattr(store, "get"):
-                    res = store.get(kv_key)
+                    res = store.get(SHARED_WORKSPACE_KEY)
                     if inspect.isawaitable(res):
                         res = await res
                     if res and isinstance(res, dict):
                         raw = res
-                        logger.log(f"[DEBUG _load_workspace_raw] Successfully loaded raw dict from context.store KV")
+                        logger.log(f"[workspace] Loaded from context.store shared key")
             except Exception as e:
-                logger.log(f"[DEBUG _load_workspace_raw] Failed to get files from context.store KV: {e}")
+                logger.log(f"[workspace] Failed to get from context.store: {e}")
 
-            # Fallback: Load from conversation history
-            if raw is None:
-                try:
-                    res = store.get_messages(cid, limit=500, order="asc")
-                    if inspect.isawaitable(res):
-                        messages = await res
+    # --- 4. Fallback: conversation history ---
+    if raw is None:
+        store = getattr(context, "store", None)
+        if store:
+            try:
+                res = store.get_messages(cid, limit=500, order="asc")
+                if inspect.isawaitable(res):
+                    messages = await res
+                else:
+                    messages = res
+
+                if hasattr(store, "to_openai_input"):
+                    messages = store.to_openai_input(messages)
+
+                for msg in reversed(messages or []):
+                    if isinstance(msg, dict):
+                        role = msg.get("role")
+                        content = msg.get("content")
                     else:
-                        messages = res
-
-                    if hasattr(store, "to_openai_input"):
-                        messages = store.to_openai_input(messages)
-
-                    for msg in reversed(messages or []):
-                        if isinstance(msg, dict):
-                            role = msg.get("role")
-                            content = msg.get("content")
-                        else:
-                            role = getattr(msg, "role", None)
-                            content = getattr(msg, "content", None)
-                        if role == "system" and isinstance(content, str) and content.startswith("__WORKSPACE_FILES_STATE__:"):
-                            json_str = content[len("__WORKSPACE_FILES_STATE__:"):]
-                            raw = json.loads(json_str)
-                            logger.log(f"[workspace] Loaded workspace from conversation history for {cid}")
-                            break
-                except Exception as e:
-                    logger.log(f"[workspace] Failed to load workspace from conversation history: {e}")
+                        role = getattr(msg, "role", None)
+                        content = getattr(msg, "content", None)
+                    if role == "system" and isinstance(content, str) and content.startswith("__WORKSPACE_FILES_STATE__:"):
+                        json_str = content[len("__WORKSPACE_FILES_STATE__:"):]
+                        raw = json.loads(json_str)
+                        logger.log(f"[workspace] Loaded from conversation history for {cid}")
+                        break
+            except Exception as e:
+                logger.log(f"[workspace] Failed to load from conversation history: {e}")
 
     return raw
+
+
+async def _save_raw_to_kv(kv_store: Any, key: str, data: dict[str, Any]) -> None:
+    """Save raw dict to a KV store (EdgeOne or context.store)."""
+    try:
+        if hasattr(kv_store, "put"):
+            res = kv_store.put(key, json.dumps(data) if not isinstance(data, str) else data)
+            if inspect.isawaitable(res):
+                await res
+    except Exception as e:
+        logger.log(f"[workspace] Failed to save to KV key '{key}': {e}")
 
 
 def _unwrap_files(raw: dict[str, Any] | None) -> dict[str, str]:
@@ -141,6 +182,7 @@ async def load_workspace_version(context: Any) -> int:
 async def load_workspace_files(context: Any, skip_templates: bool = False) -> dict[str, str]:
     """Load workspace files from store (falls back to message history if KV is empty/unsupported).
     Falls back to project templates if store is empty, unless skip_templates is True.
+    When templates are loaded, they are auto-saved to KV for persistence.
     """
     raw = await _load_workspace_raw(context)
     files_dict = _unwrap_files(raw)
@@ -159,8 +201,23 @@ async def load_workspace_files(context: Any, skip_templates: bool = False) -> di
     if skip_templates:
         logger.log(f"[workspace] No files in store for {cid}. Skipping templates (skip_templates=True).")
         return {}
-    logger.log(f"[workspace] No files in store for {cid}. Loading default templates.")
-    files_dict = {}
+    logger.log(f"[workspace] No files in store for {cid}. Loading default templates from filesystem.")
+    files_dict = _load_templates_from_filesystem()
+
+    # Auto-save templates to KV so they persist across conversations/reloads
+    if files_dict:
+        try:
+            await save_workspace_files(context, files_dict)
+            logger.log(f"[workspace] Auto-saved {len(files_dict)} template files to KV")
+        except Exception as e:
+            logger.log(f"[workspace] Failed to auto-save templates to KV: {e}")
+
+    return files_dict
+
+
+def _load_templates_from_filesystem() -> dict[str, str]:
+    """Load default workspace template files from the project's workspace/ directory."""
+    files_dict: dict[str, str] = {}
 
     project_root = Path(__file__).resolve().parent.parent.parent
     workspace_dir = project_root / "workspace"
@@ -187,21 +244,11 @@ async def load_workspace_files(context: Any, skip_templates: bool = False) -> di
 async def save_workspace_files(context: Any, files_dict: dict[str, str]) -> None:
     """Save workspace files to store (falls back to message history if KV is not supported).
     Stores {"version": N, "files": {...}} with an incrementing version number.
+    Saves to the shared workspace key for cross-conversation persistence.
     """
 
-    # Resolve conversation_id dynamically from context or request body
-    cid = getattr(context, "conversation_id", None)
-    if not cid and hasattr(context, "request") and getattr(context.request, "body", None):
-        body = context.request.body or {}
-        if isinstance(body, dict):
-            cid = body.get("conversationId") or body.get("conversation_id")
-
-    if not cid:
-        logger.log(f"[DEBUG save_workspace_files] Failed to resolve conversation ID! context={context}")
-        return
-
-    kv_key = f"workspace_files_{cid}"
-    logger.log(f"[DEBUG save_workspace_files] cid={cid}")
+    kv_key = SHARED_WORKSPACE_KEY
+    logger.log(f"[DEBUG save_workspace_files] saving to shared key '{kv_key}'")
 
     # Determine current version before saving
     current_version = await load_workspace_version(context)
@@ -216,7 +263,7 @@ async def save_workspace_files(context: Any, files_dict: dict[str, str]) -> None
                 res = kv_store.put(kv_key, json.dumps(wrapped))
                 if inspect.isawaitable(res):
                     await res
-                logger.log(f"[workspace] Saved workspace v{new_version} to EdgeOne KV store for {cid}")
+                logger.log(f"[workspace] Saved workspace v{new_version} to shared key")
                 return
         except Exception as e:
             logger.log(f"[DEBUG save_workspace_files] EdgeOne KV store save failed, falling back: {e}")
@@ -232,18 +279,22 @@ async def save_workspace_files(context: Any, files_dict: dict[str, str]) -> None
             res = store.put(kv_key, wrapped)
             if inspect.isawaitable(res):
                 await res
-            logger.log(f"[workspace] Saved workspace v{new_version} to KV store for {cid}")
+            logger.log(f"[workspace] Saved workspace v{new_version} to context.store shared key")
             return
         elif hasattr(store, "set"):
             res = store.set(kv_key, wrapped)
             if inspect.isawaitable(res):
                 await res
-            logger.log(f"[workspace] Saved workspace v{new_version} to KV store for {cid}")
+            logger.log(f"[workspace] Saved workspace v{new_version} to context.store shared key")
             return
     except Exception as e:
         logger.log(f"[DEBUG save_workspace_files] KV store save failed, falling back to messages: {e}")
 
     # Fallback: Save as a system message in conversation history
+    # Use a fixed conversation ID for the shared state
+    cid = getattr(context, "conversation_id", None)
+    if not cid:
+        return
     try:
         content_str = "__WORKSPACE_FILES_STATE__:" + json.dumps(wrapped)
         res = store.append_message(cid, "system", content_str)

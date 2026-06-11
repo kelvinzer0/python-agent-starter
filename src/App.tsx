@@ -265,9 +265,41 @@ function AppInner() {
     try {
       if (!conversationId) return;
       const cloudFiles = await fetchWorkspaceFiles(conversationId);
-      setWorkspaceFiles(cloudFiles);
+      if (cloudFiles.length > 0) {
+        setWorkspaceFiles(cloudFiles);
+        // Also sync to IDB for offline persistence
+        for (const f of cloudFiles) {
+          const content = await readWorkspaceFile(conversationId, f.name);
+          if (content) {
+            await saveFile({ conversationId, filepath: f.name, content });
+          }
+        }
+      } else {
+        // Cloud empty — try IDB fallback for display
+        const idbFiles = await loadConversationFiles(conversationId);
+        const fileList = Object.entries(idbFiles).map(([name, content]) => ({
+          name,
+          size: content.length,
+        }));
+        if (fileList.length > 0) {
+          setWorkspaceFiles(fileList);
+        }
+      }
     } catch (err) {
       console.error('Failed to load workspace files:', err);
+      // On error, try IDB fallback
+      try {
+        const idbFiles = await loadConversationFiles(conversationId);
+        const fileList = Object.entries(idbFiles).map(([name, content]) => ({
+          name,
+          size: content.length,
+        }));
+        if (fileList.length > 0) {
+          setWorkspaceFiles(fileList);
+        }
+      } catch {
+        // IDB fallback also failed
+      }
     }
   }, [conversationId]);
 
@@ -278,16 +310,41 @@ function AppInner() {
   const syncFilesFromCloud = useCallback(async (cid: string) => {
     try {
       const cloudFiles = await fetchWorkspaceFiles(cid);
-      setWorkspaceFiles(cloudFiles);
-      // Sync to IDB for offline access: read each file content and store
-      for (const f of cloudFiles) {
-        const content = await readWorkspaceFile(cid, f.name);
-        if (content) {
-          await saveFile({ conversationId: cid, filepath: f.name, content });
+      if (cloudFiles.length > 0) {
+        setWorkspaceFiles(cloudFiles);
+        // Sync to IDB for offline access: read each file content and store
+        for (const f of cloudFiles) {
+          const content = await readWorkspaceFile(cid, f.name);
+          if (content) {
+            await saveFile({ conversationId: cid, filepath: f.name, content });
+          }
+        }
+      } else {
+        // Cloud is empty — fall back to IDB cached files (offline persistence)
+        const idbFiles = await loadConversationFiles(cid);
+        const fileList = Object.entries(idbFiles).map(([name, content]) => ({
+          name,
+          size: content.length,
+        }));
+        if (fileList.length > 0) {
+          setWorkspaceFiles(fileList);
         }
       }
     } catch (err) {
       console.error('Failed to sync files from cloud:', err);
+      // On error, fall back to IDB cached files
+      try {
+        const idbFiles = await loadConversationFiles(cid);
+        const fileList = Object.entries(idbFiles).map(([name, content]) => ({
+          name,
+          size: content.length,
+        }));
+        if (fileList.length > 0) {
+          setWorkspaceFiles(fileList);
+        }
+      } catch {
+        // IDB fallback also failed — sidebar stays empty
+      }
     }
   }, []);
 
