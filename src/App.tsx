@@ -325,7 +325,10 @@ function AppInner() {
 
   const handleMountFolder = useCallback(async () => {
     try {
-      await initLocalFs();
+      // Synchronously check to avoid losing user gesture activation
+      if (!(window as any).fs) {
+        await initLocalFs();
+      }
       const path = await mountLocalFolder();
       setMountedPath(path);
       localStorage.setItem('mounted_folder_path', path);
@@ -343,9 +346,10 @@ function AppInner() {
       
       await refreshLocalFiles();
       alert(`Directory mounted successfully at: ${path}\nBidirectional sync is now active!`);
-    } catch (err) {
+    } catch (err: any) {
       console.error('Mounting failed:', err);
-      alert('Mounting local folder failed or was cancelled.');
+      const msg = err?.message || String(err);
+      alert(`Mounting local folder failed: ${msg}`);
     }
   }, [refreshLocalFiles]);
 
