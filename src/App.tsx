@@ -7,11 +7,6 @@ import {
   fetchWorkspaceFileStatus, syncFileToSandbox, syncDeleteToSandbox
 } from './api';
 import type { ModelOption } from './api';
-import { 
-  initLocalFs, writeLocalFile, readLocalFile, listLocalFiles, deleteLocalFile,
-  mountLocalFolder, unmountLocalFolder, setWorkspaceRoot, getWorkspaceRoot,
-  checkMountPermission, verifyAndRequestPermission
-} from './lib/phcode-fs';
 import { I18nProvider, useT } from './i18n';
 import ReplShell from './components/repl/ReplShell';
 import ReplStream from './components/repl/ReplStream';
@@ -260,73 +255,24 @@ function AppInner() {
   const [editingFile, setEditingFile] = useState<{ name: string; content: string; isNew: boolean } | null>(null);
   const [editorLoading, setEditorLoading] = useState(false);
   const [editorSaving, setEditorSaving] = useState(false);
-  const [mountedPath, setMountedPath] = useState<string>(() => localStorage.getItem('mounted_folder_path') || '');
-  const [hasPermission, setHasPermission] = useState(true);
-  const lastSyncedRef = useRef<Map<string, { size: number; mtime: number }>>(new Map());
-
   const refreshLocalFiles = useCallback(async () => {
     try {
-      await initLocalFs();
-      const localFiles = await listLocalFiles();
-      setWorkspaceFiles(localFiles);
-      
-      // Update last synced map so focus scanning can ignore these
-      lastSyncedRef.current.clear();
-      for (const f of localFiles) {
-        lastSyncedRef.current.set(f.name, { size: f.size, mtime: f.mtime });
-      }
+      if (!conversationId) return;
+      const cloudFiles = await fetchWorkspaceFiles(conversationId);
+      setWorkspaceFiles(cloudFiles);
     } catch (err) {
-      console.error('Failed to load local files:', err);
+      console.error('Failed to load workspace files:', err);
     }
-  }, []);
+  }, [conversationId]);
 
   useEffect(() => {
-    if (mountedPath) {
-      setWorkspaceRoot(mountedPath);
-      (async () => {
-        await initLocalFs();
-        const granted = await checkMountPermission(mountedPath);
-        setHasPermission(granted);
-        if (granted) {
-          refreshLocalFiles();
-        } else {
-          setWorkspaceFiles([]);
-        }
-      })();
-    } else {
-      setWorkspaceRoot('/');
-      setHasPermission(true);
-      refreshLocalFiles();
-    }
-  }, [mountedPath, refreshLocalFiles]);
+    refreshLocalFiles();
+  }, [refreshLocalFiles]);
 
   const syncFilesFromCloud = useCallback(async (cid: string) => {
     try {
-      await initLocalFs();
       const cloudFiles = await fetchWorkspaceFiles(cid);
-      const localFiles = await listLocalFiles();
-      const cloudFileNames = new Set(cloudFiles.map(f => f.name));
-
-      for (const localF of localFiles) {
-        if (!cloudFileNames.has(localF.name)) {
-          await deleteLocalFile(localF.name);
-          lastSyncedRef.current.delete(localF.name);
-        }
-      }
-
-      await Promise.all(cloudFiles.map(async (cloudF) => {
-        const content = await readWorkspaceFile(cid, cloudF.name);
-        await writeLocalFile(cloudF.name, content);
-      }));
-
-      const updatedLocalFiles = await listLocalFiles();
-      setWorkspaceFiles(updatedLocalFiles);
-      
-      // Keep local sync cache aligned
-      lastSyncedRef.current.clear();
-      for (const f of updatedLocalFiles) {
-        lastSyncedRef.current.set(f.name, { size: f.size, mtime: f.mtime });
-      }
+      setWorkspaceFiles(cloudFiles);
     } catch (err) {
       console.error('Failed to sync files from cloud:', err);
     }
@@ -336,67 +282,6 @@ function AppInner() {
     if (!cid) return;
     await syncFilesFromCloud(cid);
   }, [syncFilesFromCloud]);
-
-  const handleMountFolder = useCallback(async () => {
-    try {
-      // Synchronously check to avoid losing user gesture activation
-      if (!(window as any).fs) {
-        await initLocalFs();
-      }
-      const path = await mountLocalFolder();
-      setMountedPath(path);
-      localStorage.setItem('mounted_folder_path', path);
-      setWorkspaceRoot(path);
-      
-      // Wait for mount point registration to propagate
-      if ((window as any).fs && typeof (window as any).fs.refreshMountPoints === 'function') {
-        try {
-          await (window as any).fs.refreshMountPoints();
-        } catch (e) {}
-      }
-      await new Promise(resolve => setTimeout(resolve, 300));
-      setHasPermission(true);
-
-      console.log(`[mount] Folder mounted at ${path}. Syncing files to sandbox...`);
-      const localFiles = await listLocalFiles();
-      
-      // Sync local files to cloud store & sandbox
-      for (const f of localFiles) {
-        const content = await readLocalFile(f.name);
-        await writeWorkspaceFile(conversationIdRef.current, f.name, content);
-        await syncFileToSandbox(conversationIdRef.current, f.name, content);
-      }
-      
-      await refreshLocalFiles();
-      alert(`Directory mounted successfully at: ${path}\nBidirectional sync is now active!`);
-    } catch (err: any) {
-      console.error('Mounting failed:', err);
-      const msg = err?.message || String(err);
-      alert(`Mounting local folder failed: ${msg}`);
-    }
-  }, [refreshLocalFiles]);
-
-  const handleUnmountFolder = useCallback(() => {
-    unmountLocalFolder();
-    setMountedPath('');
-    localStorage.removeItem('mounted_folder_path');
-    setHasPermission(true);
-    refreshLocalFiles();
-  }, [refreshLocalFiles]);
-
-  const handleRequestPermission = useCallback(async () => {
-    try {
-      const success = await verifyAndRequestPermission(mountedPath);
-      setHasPermission(success);
-      if (success) {
-        await new Promise(resolve => setTimeout(resolve, 300));
-        await refreshLocalFiles();
-        await syncFilesFromCloud(conversationIdRef.current);
-      }
-    } catch (err) {
-      console.error('Failed to request permission:', err);
-    }
-  }, [mountedPath, refreshLocalFiles, syncFilesFromCloud]);
 
   const [lines, setLines] = useState<ReplLine[]>([]);
   const [traceEvents, setTraceEvents] = useState<RawSseEvent[]>([]);
@@ -556,61 +441,7 @@ function AppInner() {
     return () => clearInterval(interval);
   }, [loading, syncFilesFromCloud]);
 
-  // Listen for window focus to check for local changes when folder is mounted
-  useEffect(() => {
-    const handleFocus = async () => {
-      const root = getWorkspaceRoot();
-      if (root === '/') return; // Only sync when a local folder is mounted
-      
-      console.log('[fs_sync] Window focused. Scanning for local modifications...');
-      try {
-        await initLocalFs();
-        const localFiles = await listLocalFiles();
-        const localFileNames = new Set(localFiles.map(f => f.name));
-        
-        let changed = false;
-        
-        // Find modified or new files
-        for (const localF of localFiles) {
-          const synced = lastSyncedRef.current.get(localF.name);
-          if (!synced || synced.size !== localF.size || synced.mtime !== localF.mtime) {
-            console.log(`[fs_sync] Local change detected in ${localF.name} (size: ${localF.size}, mtime: ${localF.mtime})`);
-            const content = await readLocalFile(localF.name);
-            
-            await writeWorkspaceFile(conversationIdRef.current, localF.name, content);
-            await syncFileToSandbox(conversationIdRef.current, localF.name, content);
-            
-            lastSyncedRef.current.set(localF.name, { size: localF.size, mtime: localF.mtime });
-            changed = true;
-          }
-        }
-        
-        // Find deleted files
-        for (const name of lastSyncedRef.current.keys()) {
-          if (!localFileNames.has(name)) {
-            console.log(`[fs_sync] Local deletion detected for ${name}`);
-            await deleteWorkspaceFile(conversationIdRef.current, name);
-            await syncDeleteToSandbox(conversationIdRef.current, name);
-            
-            lastSyncedRef.current.delete(name);
-            changed = true;
-          }
-        }
-        
-        if (changed) {
-          const updated = await listLocalFiles();
-          setWorkspaceFiles(updated);
-        }
-      } catch (err) {
-        console.warn('[fs_sync] Window focus sync failed:', err);
-      }
-    };
 
-    window.addEventListener('focus', handleFocus);
-    return () => {
-      window.removeEventListener('focus', handleFocus);
-    };
-  }, []);
 
 
   // ─── SSE handlers (turn-scoped) ─────────────────────────────────────
@@ -728,38 +559,7 @@ function AppInner() {
       setPendingTurnId(turnId);
       setLoading(true);
 
-      (async () => {
-        try {
-          const root = getWorkspaceRoot();
-          if (root !== '/') {
-            await initLocalFs();
-            const localFiles = await listLocalFiles();
-            const localFileNames = new Set(localFiles.map(f => f.name));
-            
-            for (const localF of localFiles) {
-              const synced = lastSyncedRef.current.get(localF.name);
-              if (!synced || synced.size !== localF.size || synced.mtime !== localF.mtime) {
-                console.log(`[handleSend] Syncing local change: ${localF.name}`);
-                const content = await readLocalFile(localF.name);
-                await writeWorkspaceFile(conversationIdRef.current, localF.name, content);
-                lastSyncedRef.current.set(localF.name, { size: localF.size, mtime: localF.mtime });
-              }
-            }
-            
-            for (const name of lastSyncedRef.current.keys()) {
-              if (!localFileNames.has(name)) {
-                console.log(`[handleSend] Syncing local delete: ${name}`);
-                await deleteWorkspaceFile(conversationIdRef.current, name);
-                lastSyncedRef.current.delete(name);
-              }
-            }
-            
-            const updated = await listLocalFiles();
-            setWorkspaceFiles(updated);
-          }
-        } catch (err) {
-          console.warn('[handleSend] Sync before stream failed:', err);
-        }
+
 
         const ctrl = sendMessageStream(
           text,
@@ -809,28 +609,13 @@ function AppInner() {
               setPendingTurnId(null);
               setLines(prev => [...prev, toolLine]);
 
-              // Merge files snapshot into local workspace state if provided
+              // Update files from snapshot in state
               if (filesSnapshot && typeof filesSnapshot === 'object' && Object.keys(filesSnapshot).length > 0) {
-                (async () => {
-                  try {
-                    await initLocalFs();
-                    const localFiles = await listLocalFiles();
-                    const snapshotNames = new Set(Object.keys(filesSnapshot));
-                    // Remove local files that no longer exist in the snapshot
-                    for (const lf of localFiles) {
-                      if (!snapshotNames.has(lf.name)) {
-                        await deleteLocalFile(lf.name);
-                      }
-                    }
-                    // Write all snapshot files to local fs
-                    await Promise.all(
-                      Object.entries(filesSnapshot).map(([name, content]) => writeLocalFile(name, content))
-                    );
-                    await refreshLocalFiles();
-                  } catch (err) {
-                    console.warn('[files_snapshot] Failed to merge snapshot into local fs:', err);
-                  }
-                })();
+                const snapshotFiles = Object.entries(filesSnapshot).map(([name, content]) => ({
+                  name,
+                  size: content.length,
+                }));
+                setWorkspaceFiles(snapshotFiles);
               }
             },
 
@@ -964,7 +749,6 @@ function AppInner() {
         );
 
         abortCtrlRef.current = ctrl;
-      })();
     },
     [loading, t, finishStream, handleImage],
   );
@@ -1091,21 +875,18 @@ function AppInner() {
     setEditingFile({ name: filename, content: '', isNew: false });
     setEditorLoading(true);
     try {
-      await initLocalFs();
-      const content = await readLocalFile(filename);
+      const content = await readWorkspaceFile(conversationId, filename);
       setEditingFile(prev => prev ? { ...prev, content } : null);
     } catch (err) {
       alert('Failed to read file contents');
     } finally {
       setEditorLoading(false);
     }
-  }, []);
+  }, [conversationId]);
 
   const handleSaveFile = useCallback(async (filename: string, content: string) => {
     setEditorSaving(true);
     try {
-      await initLocalFs();
-      await writeLocalFile(filename, content);
       const result = await writeWorkspaceFile(conversationId, filename, content, knownVersionRef.current || undefined);
       if (result.success) {
         // Push to sandbox
@@ -1136,8 +917,6 @@ function AppInner() {
 
   const handleDeleteFile = useCallback(async (filename: string) => {
     try {
-      await initLocalFs();
-      await deleteLocalFile(filename);
       const result = await deleteWorkspaceFile(conversationId, filename, knownVersionRef.current || undefined);
       if (result.success) {
         syncDeleteToSandbox(conversationId, filename).catch(() => {});
@@ -1252,11 +1031,6 @@ function AppInner() {
         onOpenFile={handleOpenFile}
         onDeleteFile={handleDeleteFile}
         onCreateFile={handleCreateFile}
-        mountedPath={mountedPath}
-        onMountFolder={handleMountFolder}
-        onUnmountFolder={handleUnmountFolder}
-        hasPermission={hasPermission}
-        onRequestPermission={handleRequestPermission}
       />
       <ReplShell
         modelName={selectedModel || 'Agent'}

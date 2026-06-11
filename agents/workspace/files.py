@@ -223,12 +223,14 @@ async def handler(context: Any) -> dict[str, Any]:
         if not tool_registry:
             return {"error": "No active sandbox session for sync"}
 
-        from ..chat.index import sandbox_write_file, run_sandbox_command
+        from ..chat.index import sandbox_write_file, run_sandbox_command_system
 
         action_type = body.get("action_type")
         if action_type == "delete":
             try:
-                await run_sandbox_command(tool_registry, f"rm -f /workspace/{shlex.quote(filename)}")
+                await run_sandbox_command_system(tool_registry, f"rm -f /workspace/{shlex.quote(filename)}")
+                # Sync from workspace (A) to workspace_run (B)
+                await run_sandbox_command_system(tool_registry, "mkdir -p /workspace_run && rsync -av --delete /workspace/ /workspace_run/")
                 # Also update KV: load files, remove entry, save
                 current_files = await load_workspace_files(context)
                 if filename in current_files:
@@ -245,6 +247,8 @@ async def handler(context: Any) -> dict[str, Any]:
                 return {"error": "content is required for sync write action"}
             try:
                 await sandbox_write_file(tool_registry, f"/workspace/{filename}", content)
+                # Sync from workspace (A) to workspace_run (B)
+                await run_sandbox_command_system(tool_registry, "mkdir -p /workspace_run && rsync -av --delete /workspace/ /workspace_run/")
                 # Also update KV: load files, update entry, save
                 current_files = await load_workspace_files(context)
                 current_files[filename] = content

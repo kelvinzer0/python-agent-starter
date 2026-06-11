@@ -45,7 +45,7 @@ class ToolRegistry:
         raw = await self.execute_raw(name, arguments)
         return _stringify_result(raw)
 
-    async def execute_raw(self, name: str, arguments: str) -> Any:
+    async def execute_raw(self, name: str, arguments: str, system: bool = False) -> Any:
         """Like `execute` but returns the handler's RAW value (or a structured
         error dict) without serialization.
 
@@ -64,43 +64,65 @@ class ToolRegistry:
         except json.JSONDecodeError:
             args = {}
 
-        # Intercept relative paths for filesystem tools and ensure commands run in /workspace
-        name_lower = name.lower()
-        if "file" in name_lower or "fs" in name_lower:
-            path_keys = ["path", "filepath", "file_path", "filename", "src", "dest", "target"]
-            for pk in path_keys:
-                if pk in args and isinstance(args[pk], str):
-                    path_val = args[pk].strip()
-                    if not path_val or path_val.startswith("/"):
-                        continue
-                    if path_val in [".", "./", "workspace", "workspace/"]:
-                        normalized = "/workspace"
-                    elif path_val.startswith("./workspace/"):
-                        normalized = "/workspace/" + path_val[len("./workspace/"):]
-                    elif path_val.startswith("workspace/"):
-                        normalized = "/workspace/" + path_val[len("workspace/"):]
-                    elif path_val.startswith("./"):
-                        normalized = "/workspace/" + path_val[2:]
-                    else:
-                        normalized = f"/workspace/{path_val}"
-                    args[pk] = normalized
-        elif ("command" in name_lower or "exec" in name_lower or "run" in name_lower) and not ("code" in name_lower or "interpreter" in name_lower):
-            cmd_keys = ["cmd", "command", "script"]
-            for ck in cmd_keys:
-                if ck in args and isinstance(args[ck], str):
-                    cmd_val = args[ck].strip()
-                    if cmd_val and not cmd_val.startswith("cd /workspace"):
-                        args[ck] = f"cd /workspace && {cmd_val}"
-        elif "interpreter" in name_lower or "code" in name_lower:
-            code_keys = ["code", "source", "script", "content"]
-            for ck in code_keys:
-                if ck in args and isinstance(args[ck], str):
-                    code_val = args[ck]
-                    # Inject working directory change if it looks like Python code
-                    if "import " in code_val or "print(" in code_val or "\n" in code_val or "def " in code_val:
-                        prefix = "import os; os.makedirs('/workspace', exist_ok=True); os.chdir('/workspace')\n"
-                        if prefix not in code_val:
-                            args[ck] = prefix + code_val
+        if not system:
+            # Intercept relative paths for filesystem tools and ensure commands run in /workspace
+            name_lower = name.lower()
+            if "file" in name_lower or "fs" in name_lower:
+                path_keys = ["path", "filepath", "file_path", "filename", "src", "dest", "target"]
+                for pk in path_keys:
+                    if pk in args and isinstance(args[pk], str):
+                        path_val = args[pk].strip()
+                        if not path_val or path_val.startswith("/"):
+                            continue
+                        if path_val in [".", "./", "workspace", "workspace/"]:
+                            normalized = "/workspace"
+                        elif path_val.startswith("./workspace/"):
+                            normalized = "/workspace/" + path_val[len("./workspace/"):]
+                        elif path_val.startswith("workspace/"):
+                            normalized = "/workspace/" + path_val[len("workspace/"):]
+                        elif path_val.startswith("./"):
+                            normalized = "/workspace/" + path_val[2:]
+                        else:
+                            normalized = f"/workspace/{path_val}"
+                        args[pk] = normalized
+            elif ("command" in name_lower or "exec" in name_lower or "run" in name_lower) and not ("code" in name_lower or "interpreter" in name_lower):
+                cmd_keys = ["cmd", "command", "script"]
+                for ck in cmd_keys:
+                    if ck in args and isinstance(args[ck], str):
+                        cmd_val = args[ck].strip()
+                        if cmd_val:
+                            # Strip out existing cd /workspace if present to avoid confusion
+                            if cmd_val.startswith("cd /workspace && "):
+                                cmd_val = cmd_val[len("cd /workspace && "):]
+                            elif cmd_val.startswith("cd /workspace &&"):
+                                cmd_val = cmd_val[len("cd /workspace &&"):]
+                            
+                            args[ck] = (
+                                "mkdir -p /workspace_run && "
+                                "rsync -av --delete /workspace/ /workspace_run/ && "
+                                "rsync -av --delete /workspace_run/ /workspace/ && "
+                                f"(cd /workspace_run && {cmd_val}) ; "
+                                "rsync -av --delete /workspace_run/ /workspace/"
+                            )
+            elif "interpreter" in name_lower or "code" in name_lower:
+                code_keys = ["code", "source", "script", "content"]
+                for ck in code_keys:
+                    if ck in args and isinstance(args[ck], str):
+                        code_val = args[ck]
+                        # Inject working directory change and double-sync if it looks like Python code
+                        if "import " in code_val or "print(" in code_val or "\n" in code_val or "def " in code_val:
+                            prefix = (
+                                "import os, subprocess, atexit\n"
+                                "os.makedirs('/workspace_run', exist_ok=True)\n"
+                                "subprocess.run(['rsync', '-av', '--delete', '/workspace/', '/workspace_run/'])\n"
+                                "subprocess.run(['rsync', '-av', '--delete', '/workspace_run/', '/workspace/'])\n"
+                                "os.chdir('/workspace_run')\n"
+                                "def _sync_back():\n"
+                                "    subprocess.run(['rsync', '-av', '--delete', '/workspace_run/', '/workspace/'])\n"
+                                "atexit.register(_sync_back)\n"
+                            )
+                            if "atexit.register(_sync_back)" not in code_val:
+                                args[ck] = prefix + code_val
 
         try:
             # Safely inspect parameter signature to filter arguments

@@ -31,6 +31,7 @@ import zipfile
 import io
 import re
 import os
+import base64
 
 import httpx
 
@@ -105,7 +106,7 @@ async def sandbox_write_file(tool_registry: ToolRegistry, path: str, content: st
     args[path_key] = path
     args[content_key] = content
     
-    res = await tool_registry.execute_raw(tool_name, json.dumps(args))
+    res = await tool_registry.execute_raw(tool_name, json.dumps(args), system=True)
     if isinstance(res, dict) and "error" in res:
         return False
     return True
@@ -123,7 +124,7 @@ async def sandbox_read_file(tool_registry: ToolRegistry, path: str) -> str | Non
         path_key = "filepath"
         
     args = {path_key: path}
-    res = await tool_registry.execute_raw(tool_name, json.dumps(args))
+    res = await tool_registry.execute_raw(tool_name, json.dumps(args), system=True)
     if isinstance(res, dict) and "error" in res:
         return None
     if isinstance(res, str):
@@ -146,8 +147,8 @@ def find_command_tool_name(tool_registry: ToolRegistry) -> str | None:
     return None
 
 
-async def run_sandbox_command(tool_registry: ToolRegistry, command: str) -> str | None:
-    """Directly execute a shell command in the sandbox container."""
+async def run_sandbox_command_system(tool_registry: ToolRegistry, command: str) -> str | None:
+    """Directly execute a shell command in the sandbox container without wrapping (system mode)."""
     tool_name = find_command_tool_name(tool_registry)
     if not tool_name:
         return None
@@ -156,7 +157,7 @@ async def run_sandbox_command(tool_registry: ToolRegistry, command: str) -> str 
     if "cmd" in params:
         cmd_key = "cmd"
     args = {cmd_key: command}
-    res = await tool_registry.execute_raw(tool_name, json.dumps(args))
+    res = await tool_registry.execute_raw(tool_name, json.dumps(args), system=True)
     if isinstance(res, dict) and "error" in res:
         return None
     if isinstance(res, str):
@@ -164,6 +165,23 @@ async def run_sandbox_command(tool_registry: ToolRegistry, command: str) -> str 
     if isinstance(res, dict) and "output" in res:
         return str(res["output"])
     return str(res)
+
+
+async def run_sandbox_command(tool_registry: ToolRegistry, command: str) -> str | None:
+    """Execute a shell command wrapped in the rsync-based workspace run sync."""
+    # First execute a raw mkdir -p /workspace_run via the system runner
+    await run_sandbox_command_system(tool_registry, "mkdir -p /workspace_run")
+    
+    # Wrap the given command
+    wrapped_command = (
+        "rsync -av --delete /workspace/ /workspace_run/ && "
+        "rsync -av --delete /workspace_run/ /workspace/ && "
+        f"(cd /workspace_run && {command}) ; "
+        "rsync -av --delete /workspace_run/ /workspace/"
+    )
+    
+    return await run_sandbox_command_system(tool_registry, wrapped_command)
+
 
 
 async def sync_skills_to_sandbox(tool_registry: ToolRegistry) -> None:
@@ -289,42 +307,80 @@ except Exception as e:
     
     # 7. Execute extract script in sandbox
     logger.log("[skills] Extracting skills inside sandbox...")
-    res = await run_sandbox_command(tool_registry, "python3 /tmp/extract.py")
+    res = await run_sandbox_command_system(tool_registry, "python3 /tmp/extract.py")
     logger.log(f"[skills] Extract result: {res}")
     
     # 8. Clean up temporary files in sandbox
-    await run_sandbox_command(tool_registry, "rm -f /tmp/skills.zip.b64 /tmp/skills.zip /tmp/local_manifest.json /tmp/extract.py")
+    await run_sandbox_command_system(tool_registry, "rm -f /tmp/skills.zip.b64 /tmp/skills.zip /tmp/local_manifest.json /tmp/extract.py")
 
 
 
 
 async def sync_workspace_to_sandbox(tool_registry: ToolRegistry, files_dict: dict[str, str]) -> None:
-    """Initialize workspace files inside the stateless sandbox container under /workspace/."""
+    """Initialize workspace files inside the stateless sandbox container under /workspace/ using a secure zip uploader."""
     # Clean up any existing workspace files in the sandbox to ensure deleted files are removed
-    await run_sandbox_command(tool_registry, "rm -rf /workspace && mkdir -p /workspace")
-    
-    # Track directories we have already created to avoid duplicate mkdir commands
-    created_dirs = {"/workspace"}
-    
-    for filename, content in files_dict.items():
-        sandbox_path = f"/workspace/{filename}"
-        parent_dir = os.path.dirname(sandbox_path)
-        
-        # If the file is in a subdirectory, make sure that subdirectory is created first
-        if parent_dir not in created_dirs:
-            await run_sandbox_command(tool_registry, f"mkdir -p {parent_dir}")
-            created_dirs.add(parent_dir)
+    await run_sandbox_command_system(tool_registry, "rm -rf /workspace && mkdir -p /workspace")
+
+    if not files_dict:
+        return
+
+    # 1. Package workspace files dict into a zip in memory
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
+        for filename, content in files_dict.items():
+            zip_file.writestr(filename, content)
             
-        success = await sandbox_write_file(tool_registry, sandbox_path, content)
-        if success:
-            logger.log(f"[workspace] Synced {filename} to sandbox path {sandbox_path}")
-        else:
-            logger.log(f"[workspace] Failed to sync {filename} to sandbox")
+    zip_bytes = zip_buffer.getvalue()
+    zip_b64 = base64.b64encode(zip_bytes).decode("utf-8")
+    
+    # 2. Write base64 zip to sandbox /tmp
+    await sandbox_write_file(tool_registry, "/tmp/workspace.zip.b64", zip_b64)
+    
+    # 3. Write extract script to /tmp/extract_workspace.py in sandbox
+    extract_script = """import base64
+import zipfile
+import os
+import shutil
+
+try:
+    # Read and decode zip file
+    with open("/tmp/workspace.zip.b64", "r") as f:
+        b64_data = f.read()
+    zip_data = base64.b64decode(b64_data)
+    with open("/tmp/workspace.zip", "wb") as f:
+        f.write(zip_data)
+        
+    target_dir = "/workspace"
+    # Recreate target dir safely
+    if os.path.exists(target_dir):
+        shutil.rmtree(target_dir)
+    os.makedirs(target_dir, exist_ok=True)
+    
+    # Safe extraction with path traversal validation
+    with zipfile.ZipFile("/tmp/workspace.zip", "r") as z:
+        for member in z.infolist():
+            target_path = os.path.abspath(os.path.join(target_dir, member.filename))
+            if not target_path.startswith(os.path.abspath(target_dir)):
+                raise Exception(f"Directory traversal attempt detected: {member.filename}")
+            z.extract(member, target_dir)
+            
+    print("SUCCESS")
+except Exception as e:
+    print("ERROR:", str(e))
+"""
+    await sandbox_write_file(tool_registry, "/tmp/extract_workspace.py", extract_script)
+    
+    # 4. Execute extract script in sandbox
+    res = await run_sandbox_command_system(tool_registry, "python3 /tmp/extract_workspace.py")
+    logger.log(f"[workspace] Sync to sandbox extract result: {res}")
+    
+    # 5. Clean up temporary files
+    await run_sandbox_command_system(tool_registry, "rm -f /tmp/workspace.zip.b64 /tmp/workspace.zip /tmp/extract_workspace.py")
 
 
 async def ensure_sandbox_initialized(context: Any, tool_registry: ToolRegistry) -> None:
     """Check if the sandbox container has lost its workspace or skills, and reinitialize on the fly if needed."""
-    res = await run_sandbox_command(tool_registry, "ls -la /tmp/.sandbox_init 2>/dev/null")
+    res = await run_sandbox_command_system(tool_registry, "ls -la /tmp/.sandbox_init 2>/dev/null")
     if not res or "/tmp/.sandbox_init" not in res:
         logger.log("[sandbox] Sandbox reset or sentinel missing. Reinitializing workspace and skills...")
         # Re-sync workspace
@@ -338,39 +394,74 @@ async def ensure_sandbox_initialized(context: Any, tool_registry: ToolRegistry) 
 
 
 async def sync_workspace_from_sandbox(context: Any, tool_registry: ToolRegistry) -> None:
-    """Read updated workspace files from the sandbox and save them back to context.store KV."""
+    """Read updated workspace files from the sandbox and save them back to context.store KV using a secure base64-zip downloader."""
     cid = context.conversation_id
     
-    list_script = """import os, json
-res = {}
-target = '/workspace'
-if os.path.exists(target):
-    for root, dirs, files in os.walk(target):
-        for file in files:
-            full_path = os.path.join(root, file)
-            rel_path = os.path.relpath(full_path, target)
-            try:
-                with open(full_path, 'r', encoding='utf-8') as f:
-                    res[rel_path] = f.read()
-            except Exception:
-                pass
-print(json.dumps(res))
-"""
-    await sandbox_write_file(tool_registry, "/tmp/list_workspace.py", list_script)
-    output = await run_sandbox_command(tool_registry, "python3 /tmp/list_workspace.py")
-    await run_sandbox_command(tool_registry, "rm -f /tmp/list_workspace.py")
+    zip_script = """import os
+import zipfile
+import base64
 
-    if not output:
-        logger.log("[workspace] Failed to list workspace files in sandbox")
+target = '/workspace'
+zip_path = '/tmp/workspace_out.zip'
+b64_path = '/tmp/workspace_out.zip.b64'
+
+try:
+    if os.path.exists(zip_path):
+        os.remove(zip_path)
+    if os.path.exists(b64_path):
+        os.remove(b64_path)
+
+    if os.path.exists(target):
+        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as z:
+            for root, dirs, files in os.walk(target):
+                for file in files:
+                    full_path = os.path.join(root, file)
+                    rel_path = os.path.relpath(full_path, target)
+                    z.write(full_path, rel_path)
+        
+        # Read the zip and write as base64 to file
+        with open(zip_path, 'rb') as f:
+            zip_bytes = f.read()
+        b64_data = base64.b64encode(zip_bytes).decode('utf-8')
+        with open(b64_path, 'w') as f:
+            f.write(b64_data)
+        print("SUCCESS")
+    else:
+        print("ERROR: /workspace directory not found")
+except Exception as e:
+    print("ERROR:", str(e))
+"""
+    await sandbox_write_file(tool_registry, "/tmp/zip_workspace.py", zip_script)
+    res = await run_sandbox_command_system(tool_registry, "python3 /tmp/zip_workspace.py")
+    await run_sandbox_command_system(tool_registry, "rm -f /tmp/zip_workspace.py")
+
+    if not res or "SUCCESS" not in res:
+        logger.log(f"[workspace] Failed to package workspace in sandbox: {res}")
+        return
+
+    # Read base64 zip content
+    b64_content = await sandbox_read_file(tool_registry, "/tmp/workspace_out.zip.b64")
+    # Clean up temporary files in sandbox
+    await run_sandbox_command_system(tool_registry, "rm -f /tmp/workspace_out.zip /tmp/workspace_out.zip.b64")
+
+    if not b64_content:
+        logger.log("[workspace] Failed to read packaged workspace zip from sandbox")
         return
 
     try:
-        updated_files = json.loads(output)
+        zip_bytes = base64.b64decode(b64_content.strip())
+        zip_buffer = io.BytesIO(zip_bytes)
+        updated_files = {}
+        with zipfile.ZipFile(zip_buffer, "r") as z:
+            for member in z.infolist():
+                # Read content as string
+                content = z.read(member).decode("utf-8", errors="replace")
+                updated_files[member.filename] = content
     except Exception as e:
-        logger.log(f"[workspace] Failed to parse listed workspace JSON: {e}. Output was: {output[:500]}")
+        logger.log(f"[workspace] Failed to unzip workspace files: {e}")
         return
 
-    logger.log(f"[workspace] Read {len(updated_files)} files from sandbox workspace")
+    logger.log(f"[workspace] Read {len(updated_files)} files from sandbox workspace zip")
     
     try:
         await save_workspace_files(context, updated_files)
@@ -402,7 +493,7 @@ async def start_inotify_watcher(tool_registry: ToolRegistry) -> None:
     # Write the watcher script to the sandbox
     await sandbox_write_file(tool_registry, "/tmp/fs_watcher.py", watcher_code)
     # Install watchdog with timeout and start the watcher in the background
-    await run_sandbox_command(
+    await run_sandbox_command_system(
         tool_registry,
         "timeout 60 pip install watchdog -q 2>/dev/null; nohup python3 /tmp/fs_watcher.py > /tmp/fs_watcher.log 2>&1 &"
     )
@@ -438,12 +529,12 @@ async def stop_inotify_watcher(tool_registry: ToolRegistry) -> None:
         pid_str = await sandbox_read_file(tool_registry, "/tmp/fs_watcher.pid")
         if pid_str and pid_str.strip():
             pid = pid_str.strip().split("\n")[0].strip()
-            await run_sandbox_command(tool_registry, f"kill {pid} 2>/dev/null")
+            await run_sandbox_command_system(tool_registry, f"kill {pid} 2>/dev/null")
     except Exception as e:
         logger.log(f"[inotify] Failed to stop watcher: {e}")
 
     # Clean up temp files
-    await run_sandbox_command(tool_registry, "rm -f /tmp/fs_watcher.pid /tmp/fs_watcher.log /tmp/fs_events.jsonl /tmp/fs_watcher.py")
+    await run_sandbox_command_system(tool_registry, "rm -f /tmp/fs_watcher.pid /tmp/fs_watcher.log /tmp/fs_events.jsonl /tmp/fs_watcher.py")
     logger.log("[inotify] Watcher stopped and temp files cleaned up")
 
 
@@ -975,6 +1066,7 @@ async def handler(context: Any) -> AsyncGenerator[str, None]:
             current_files[filename] = content
             await save_workspace_files(context, current_files)
             await sandbox_write_file(tool_registry, f"/workspace/{filename}", content)
+            await run_sandbox_command_system(tool_registry, "mkdir -p /workspace_run && rsync -av --delete /workspace/ /workspace_run/")
             tool_registry.local_fs_dirty = True
             return f"Successfully wrote file '{filename}' to local workspace."
 
@@ -984,7 +1076,8 @@ async def handler(context: Any) -> AsyncGenerator[str, None]:
                 del current_files[filename]
                 await save_workspace_files(context, current_files)
                 import shlex
-                await run_sandbox_command(tool_registry, f"rm -f /workspace/{shlex.quote(filename)}")
+                await run_sandbox_command_system(tool_registry, f"rm -f /workspace/{shlex.quote(filename)}")
+                await run_sandbox_command_system(tool_registry, "mkdir -p /workspace_run && rsync -av --delete /workspace/ /workspace_run/")
                 tool_registry.local_fs_dirty = True
                 return f"Successfully deleted file '{filename}' from local workspace."
             return f"Error: File '{filename}' not found in local workspace."
@@ -1080,16 +1173,18 @@ async def handler(context: Any) -> AsyncGenerator[str, None]:
             import os
             parent_dir = os.path.dirname(path)
             if parent_dir and parent_dir != "/":
-                await run_sandbox_command(tool_registry, f"mkdir -p {parent_dir}")
+                await run_sandbox_command_system(tool_registry, f"mkdir -p {parent_dir}")
             success = await sandbox_write_file(tool_registry, path, content)
             if success:
+                await run_sandbox_command_system(tool_registry, "mkdir -p /workspace_run && rsync -av --delete /workspace/ /workspace_run/")
                 return f"Successfully wrote file '{filename}' in sandbox container."
             return f"Error: Failed to write file '{filename}' in sandbox container."
 
         async def sandbox_delete_file_tool(filename: str) -> str:
             path = filename if filename.startswith("/") else f"/workspace/{filename}"
             import shlex
-            await run_sandbox_command(tool_registry, f"rm -f {shlex.quote(path)}")
+            await run_sandbox_command_system(tool_registry, f"rm -f {shlex.quote(path)}")
+            await run_sandbox_command_system(tool_registry, "mkdir -p /workspace_run && rsync -av --delete /workspace/ /workspace_run/")
             return f"Successfully deleted file '{filename}' from sandbox container."
 
         async def sandbox_list_files_tool() -> str:
@@ -1112,8 +1207,8 @@ else:
     print("Sandbox workspace is empty.")
 """
             await sandbox_write_file(tool_registry, "/tmp/list_sandbox_workspace.py", list_script)
-            output = await run_sandbox_command(tool_registry, "python3 /tmp/list_sandbox_workspace.py")
-            await run_sandbox_command(tool_registry, "rm -f /tmp/list_sandbox_workspace.py")
+            output = await run_sandbox_command_system(tool_registry, "python3 /tmp/list_sandbox_workspace.py")
+            await run_sandbox_command_system(tool_registry, "rm -f /tmp/list_sandbox_workspace.py")
             if not output:
                 return "Sandbox workspace (/workspace) is empty or could not be read."
             return "Files in sandbox workspace:\n" + output.strip()
