@@ -1130,6 +1130,11 @@ async def handler(context: Any) -> AsyncGenerator[str, None]:
                     current_kv[rel] = content
                     await save_workspace_files(context, current_kv)
                     new_ver = await load_workspace_version(context)
+                    # Track modified files for file_changed snapshot
+                    if not hasattr(tool_registry, '_modified_files'):
+                        tool_registry._modified_files = {}
+                    tool_registry._modified_files[rel] = content
+                    tool_registry.local_fs_dirty = True
                     # Note: file_changed SSE is emitted in the post-tool-wave block
                 return f"Successfully wrote file '{filename}' in sandbox container."
             return f"Error: Failed to write file '{filename}' in sandbox container."

@@ -34,6 +34,7 @@ export const API = {
   history: '/history',
   models: '/models',
   workspaceFiles: '/workspace/files',
+  workspaceSyncFromIdb: '/workspace/sync-from-idb',
   authRegister: '/auth/register',
   authLogin: '/auth/login',
   authMe: '/auth/me',
@@ -457,6 +458,25 @@ export async function stopAgent(conversationId?: string): Promise<boolean> {
       body: JSON.stringify({ conversation_id: conversationId }),
     });
     return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+/** Push IDB files to backend before chat so sandbox has latest workspace */
+export async function syncIdbToBackend(conversationId: string, files: Record<string, string>): Promise<boolean> {
+  try {
+    const res = await fetch(API.workspaceSyncFromIdb, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'makers-conversation-id': conversationId,
+      },
+      body: JSON.stringify({ conversation_id: conversationId, files }),
+    });
+    if (!res.ok) return false;
+    const data = await res.json();
+    return data?.success === true;
   } catch {
     return false;
   }
