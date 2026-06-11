@@ -100,7 +100,6 @@ class ToolRegistry:
                             args[ck] = (
                                 "mkdir -p /workspace_run && "
                                 "rsync -av --delete /workspace/ /workspace_run/ && "
-                                "rsync -av --delete /workspace_run/ /workspace/ && "
                                 f"(cd /workspace_run && {cmd_val}) ; "
                                 "rsync -av --delete /workspace_run/ /workspace/"
                             )
@@ -115,7 +114,6 @@ class ToolRegistry:
                                 "import os, subprocess, atexit\n"
                                 "os.makedirs('/workspace_run', exist_ok=True)\n"
                                 "subprocess.run(['rsync', '-av', '--delete', '/workspace/', '/workspace_run/'])\n"
-                                "subprocess.run(['rsync', '-av', '--delete', '/workspace_run/', '/workspace/'])\n"
                                 "os.chdir('/workspace_run')\n"
                                 "def _sync_back():\n"
                                 "    subprocess.run(['rsync', '-av', '--delete', '/workspace_run/', '/workspace/'])\n"

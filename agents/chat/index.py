@@ -175,7 +175,6 @@ async def run_sandbox_command(tool_registry: ToolRegistry, command: str) -> str 
     # Wrap the given command
     wrapped_command = (
         "rsync -av --delete /workspace/ /workspace_run/ && "
-        "rsync -av --delete /workspace_run/ /workspace/ && "
         f"(cd /workspace_run && {command}) ; "
         "rsync -av --delete /workspace_run/ /workspace/"
     )
