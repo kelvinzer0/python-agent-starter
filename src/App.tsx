@@ -825,10 +825,25 @@ function AppInner() {
                 knownVersionRef.current = payload.version;
                 // Persist version manifest in IndexedDB for efficient reload detection
                 saveManifest(conversationIdRef.current, {}, payload.version).catch(() => {});
-                // Re-sync from cloud — syncFilesFromCloud now MERGES with IDB
-                // (IDB files take priority, cloud only adds missing files).
-                // Backend has already saved updated files via sync_workspace_from_sandbox.
-                syncFilesFromCloud(conversationIdRef.current);
+
+                // If backend sent files_snapshot, save directly to IDB
+                const snapshot = (payload as any).files_snapshot;
+                if (snapshot && typeof snapshot === 'object' && Object.keys(snapshot).length > 0) {
+                  const cid = conversationIdRef.current;
+                  for (const [filepath, content] of Object.entries(snapshot)) {
+                    if (typeof content === 'string') {
+                      saveFile({ conversationId: cid, filepath, content }).catch(() => {});
+                    }
+                  }
+                  // Update sidebar
+                  setWorkspaceFiles(Object.entries(snapshot).map(([name, content]) => ({
+                    name,
+                    size: (content as string).length,
+                  })));
+                } else {
+                  // Fallback: re-sync from cloud (merges with IDB)
+                  syncFilesFromCloud(conversationIdRef.current);
+                }
               }
             },
 

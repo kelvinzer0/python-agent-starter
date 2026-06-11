@@ -219,7 +219,7 @@ export interface StreamCallbacks {
   onDone: () => void;
   onError: (err: Error) => void;
   onRawEvent?: (event: RawSseEvent) => void;
-  onFileChanged?: (payload: { version: number; changed?: string[] }) => void;
+  onFileChanged?: (payload: { version: number; changed?: string[]; files_snapshot?: Record<string, string> }) => void;
 }
 
 export interface ToolDebugPayload {
@@ -396,6 +396,7 @@ function dispatchSseChunk(part: string, cb: StreamCallbacks, markDone: () => voi
           cb.onFileChanged({
             version: typeof parsed.version === 'number' ? parsed.version : 0,
             changed: Array.isArray(parsed.changed) ? parsed.changed : undefined,
+            files_snapshot: typeof parsed.files_snapshot === 'object' ? parsed.files_snapshot : undefined,
           });
         }
         break;

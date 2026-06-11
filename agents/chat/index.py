@@ -1437,6 +1437,7 @@ else:
 
                     # ── Post-toolcall sync: pull sandbox changes back after execution ──
                     pre_sync_version = await load_workspace_version(context)
+                    post_files: dict[str, str] = {}
                     try:
                         post_files = await sync_workspace_from_sandbox(context, tool_registry)
                         if post_files:
@@ -1444,13 +1445,18 @@ else:
                     except Exception as sync_err:
                         logger.log(f"[sync] Post-toolcall sync failed: {sync_err}")
 
-                    # Emit file_changed if workspace version increased (sandbox sync or local_fs_dirty)
+                    # Emit file_changed with files_snapshot so frontend can persist to IDB
                     local_dirty = getattr(tool_registry, "local_fs_dirty", False)
                     if local_dirty:
                         tool_registry.local_fs_dirty = False
                     post_sync_version = await load_workspace_version(context)
                     if post_sync_version > pre_sync_version or local_dirty:
-                        yield sse_event("file_changed", {"version": post_sync_version})
+                        # Include the actual file contents in file_changed so frontend IDB gets updated
+                        files_for_snapshot = post_files if post_files else await snapshot_workspace(context)
+                        yield sse_event("file_changed", {
+                            "version": post_sync_version,
+                            "files_snapshot": files_for_snapshot or None,
+                        })
 
                     # 3. Process outputs and emit result/image events
                     for tc_item, result, extraction, duration_ms in wave_outputs:
