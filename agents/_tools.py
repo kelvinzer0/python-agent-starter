@@ -64,6 +64,34 @@ class ToolRegistry:
         except json.JSONDecodeError:
             args = {}
 
+        # Intercept relative paths for filesystem tools and ensure commands run in /workspace
+        name_lower = name.lower()
+        if "file" in name_lower or "fs" in name_lower:
+            path_keys = ["path", "filepath", "file_path", "filename", "src", "dest", "target"]
+            for pk in path_keys:
+                if pk in args and isinstance(args[pk], str):
+                    path_val = args[pk].strip()
+                    if not path_val or path_val.startswith("/"):
+                        continue
+                    if path_val in [".", "./", "workspace", "workspace/"]:
+                        normalized = "/workspace"
+                    elif path_val.startswith("./workspace/"):
+                        normalized = "/workspace/" + path_val[len("./workspace/"):]
+                    elif path_val.startswith("workspace/"):
+                        normalized = "/workspace/" + path_val[len("workspace/"):]
+                    elif path_val.startswith("./"):
+                        normalized = "/workspace/" + path_val[2:]
+                    else:
+                        normalized = f"/workspace/{path_val}"
+                    args[pk] = normalized
+        elif ("command" in name_lower or "exec" in name_lower or "run" in name_lower) and not ("code" in name_lower or "interpreter" in name_lower):
+            cmd_keys = ["cmd", "command", "script"]
+            for ck in cmd_keys:
+                if ck in args and isinstance(args[ck], str):
+                    cmd_val = args[ck].strip()
+                    if cmd_val and not cmd_val.startswith("cd /workspace"):
+                        args[ck] = f"cd /workspace && {cmd_val}"
+
         try:
             if self._use_kwargs.get(name, False):
                 result = handler(**args)
