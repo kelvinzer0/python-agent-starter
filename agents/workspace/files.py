@@ -11,7 +11,7 @@ from pathlib import Path
 import inspect
 
 from .._logger import create_logger
-from ..chat.index import load_workspace_files
+from ..chat.index import load_workspace_files, save_workspace_files
 
 logger = create_logger("workspace_files")
 
@@ -26,9 +26,6 @@ async def handler(context: Any) -> dict[str, Any]:
     action = body.get("action")
     filename = body.get("filename")
     content = body.get("content")
-
-    store = context.store
-    store_key = "workspace_files_global"
 
     # We reuse load_workspace_files from agents.chat.index to get the current workspace dict
     # (which falls back to templates if not in store yet)
@@ -53,16 +50,9 @@ async def handler(context: Any) -> dict[str, Any]:
             
         files_dict[filename] = content
         
-        # Save back to KV store
+        # Save back to store
         try:
-            if hasattr(store, "put"):
-                res = store.put(store_key, files_dict)
-                if inspect.isawaitable(res):
-                    await res
-            elif hasattr(store, "set"):
-                res = store.set(store_key, files_dict)
-                if inspect.isawaitable(res):
-                    await res
+            await save_workspace_files(context, files_dict)
             logger.log(f"[workspace_files] Saved updated file {filename} to store")
             return {"success": True}
         except Exception as e:
@@ -76,16 +66,9 @@ async def handler(context: Any) -> dict[str, Any]:
         if filename in files_dict:
             del files_dict[filename]
             
-        # Save back to KV store
+        # Save back to store
         try:
-            if hasattr(store, "put"):
-                res = store.put(store_key, files_dict)
-                if inspect.isawaitable(res):
-                    await res
-            elif hasattr(store, "set"):
-                res = store.set(store_key, files_dict)
-                if inspect.isawaitable(res):
-                    await res
+            await save_workspace_files(context, files_dict)
             logger.log(f"[workspace_files] Deleted file {filename} from store")
             return {"success": True}
         except Exception as e:

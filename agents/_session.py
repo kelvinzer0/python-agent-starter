@@ -23,12 +23,24 @@ class ChatSession:
     async def get_history(self, conversation_id: str) -> list[dict[str, str]]:
         """Get conversation history as OpenAI-compatible message dicts."""
         try:
+            # Fetch more messages to ensure workspace state history doesn't truncate chat history
             messages = await self._store.get_messages(
                 conversation_id,
-                limit=self._max_history,
+                limit=self._max_history * 4,
                 order="asc",
             )
-            return self._store.to_openai_input(messages)
+            openai_msgs = self._store.to_openai_input(messages)
+            
+            # Filter out workspace files state messages
+            filtered = []
+            for msg in openai_msgs:
+                role = msg.get("role")
+                content = msg.get("content")
+                if role == "system" and isinstance(content, str) and content.startswith("__WORKSPACE_FILES_STATE__:"):
+                    continue
+                filtered.append(msg)
+                
+            return filtered[-self._max_history:]
         except Exception as e:
             _log.error("Failed to get history for %s: %s", conversation_id, e)
             return []

@@ -297,29 +297,88 @@ except Exception as e:
 
 # ── Workspace Persistence & Synchronization ──
 
+async def save_workspace_files(context: Any, files_dict: dict[str, str]) -> None:
+    """Save workspace files to store (falls back to message history if KV is not supported)."""
+    cid = context.conversation_id
+    store = context.store
+    if not cid or not store:
+        return
+
+    # Try standard KV first (in case it gets supported or in other environments)
+    try:
+        if hasattr(store, "put"):
+            res = store.put("workspace_files_global", files_dict)
+            if inspect.isawaitable(res):
+                await res
+            logger.log(f"[workspace] Saved workspace to KV store for {cid}")
+            return
+        elif hasattr(store, "set"):
+            res = store.set("workspace_files_global", files_dict)
+            if inspect.isawaitable(res):
+                await res
+            logger.log(f"[workspace] Saved workspace to KV store for {cid}")
+            return
+    except Exception as e:
+        logger.log(f"[workspace] KV store save failed, falling back to messages: {e}")
+
+    # Fallback: Save as a system message in conversation history
+    try:
+        content_str = "__WORKSPACE_FILES_STATE__:" + json.dumps(files_dict)
+        res = store.append_message(cid, "system", content_str)
+        if inspect.isawaitable(res):
+            await res
+        logger.log(f"[workspace] Saved workspace to conversation history for {cid}")
+    except Exception as e:
+        logger.log(f"[workspace] Failed to save workspace to conversation history: {e}")
+
+
 async def load_workspace_files(context: Any) -> dict[str, str]:
-    """Load workspace files from context.store KV storage.
+    """Load workspace files from store (falls back to message history if KV is empty/unsupported).
     Falls back to project templates if store is empty.
     """
     cid = context.conversation_id
     store = context.store
-    store_key = "workspace_files_global"
+    if not cid or not store:
+        return {}
+
     files_dict = None
 
+    # Try standard KV first
     try:
         if hasattr(store, "get"):
-            res = store.get(store_key)
+            res = store.get("workspace_files_global")
             if inspect.isawaitable(res):
                 res = await res
             if res and isinstance(res, dict):
                 files_dict = res
     except Exception as e:
-        logger.log(f"[workspace] Failed to get files from store: {e}")
-        
+        logger.log(f"[workspace] Failed to get files from KV store: {e}")
+
+    # Fallback: Load from conversation history
+    if files_dict is None:
+        try:
+            # Fetch last 500 messages, ordered desc (newest first)
+            res = store.get_messages(cid, limit=500, order="desc")
+            if inspect.isawaitable(res):
+                messages = await res
+            else:
+                messages = res
+
+            for msg in messages or []:
+                role = getattr(msg, "role", None) or (msg.get("role") if isinstance(msg, dict) else None)
+                content = getattr(msg, "content", None) or (msg.get("content") if isinstance(msg, dict) else None)
+                if role == "system" and isinstance(content, str) and content.startswith("__WORKSPACE_FILES_STATE__:"):
+                    json_str = content[len("__WORKSPACE_FILES_STATE__:"):]
+                    files_dict = json.loads(json_str)
+                    logger.log(f"[workspace] Loaded workspace from conversation history for {cid}")
+                    break
+        except Exception as e:
+            logger.log(f"[workspace] Failed to load workspace from conversation history: {e}")
+
     if files_dict is not None:
-        logger.log(f"[workspace] Loaded {len(files_dict)} files from store for {cid}")
         return files_dict
 
+    # If both failed/empty, load templates
     logger.log(f"[workspace] No files in store for {cid}. Loading default templates.")
     files_dict = {}
     
@@ -369,8 +428,6 @@ async def sync_workspace_to_sandbox(tool_registry: ToolRegistry, files_dict: dic
 async def sync_workspace_from_sandbox(context: Any, tool_registry: ToolRegistry) -> None:
     """Read updated workspace files from the sandbox and save them back to context.store KV."""
     cid = context.conversation_id
-    store = context.store
-    store_key = "workspace_files_global"
     
     list_script = """import os, json
 res = {}
@@ -404,16 +461,7 @@ print(json.dumps(res))
     logger.log(f"[workspace] Read {len(updated_files)} files from sandbox workspace")
     
     try:
-        if hasattr(store, "put"):
-            res = store.put(store_key, updated_files)
-            if inspect.isawaitable(res):
-                await res
-            logger.log(f"[workspace] Saved updated workspace back to store for {cid}")
-        elif hasattr(store, "set"):
-            res = store.set(store_key, updated_files)
-            if inspect.isawaitable(res):
-                await res
-            logger.log(f"[workspace] Saved updated workspace back to store for {cid}")
+        await save_workspace_files(context, updated_files)
     except Exception as e:
         logger.log(f"[workspace] Failed to save updated workspace to store: {e}")
 
