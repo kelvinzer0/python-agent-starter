@@ -6,6 +6,7 @@ File path agents/workspace/files.py maps to **POST /workspace/files**
 """
 
 import json
+import shlex
 from typing import Any
 from pathlib import Path
 import inspect
@@ -73,7 +74,7 @@ async def handler(context: Any) -> dict[str, Any]:
         action_type = body.get("action_type")
         if action_type == "delete":
             try:
-                await run_sandbox_command(tool_registry, f"rm -f /workspace/{filename}")
+                await run_sandbox_command(tool_registry, f"rm -f /workspace/{shlex.quote(filename)}")
                 # Also update KV: load files, remove entry, save
                 current_files = await load_workspace_files(context)
                 if filename in current_files:

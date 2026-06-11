@@ -307,7 +307,7 @@ async def save_workspace_files(context: Any, files_dict: dict[str, str]) -> None
         return
 
     # Determine current version before saving
-    current_version = await _load_workspace_version(context)
+    current_version = await load_workspace_version(context)
     new_version = current_version + 1
     wrapped = {"version": new_version, "files": files_dict}
 
@@ -418,7 +418,7 @@ async def load_workspace_files(context: Any) -> dict[str, str]:
         return files_dict
 
     # If both failed/empty, load templates
-    logger.log(f"[workspace] No files in store for {cid}. Loading default templates.")
+    logger.log(f"[workspace] No files in store for {context.conversation_id}. Loading default templates.")
     files_dict = {}
     
     project_root = Path(__file__).resolve().parent.parent.parent
@@ -528,10 +528,10 @@ async def start_inotify_watcher(tool_registry: ToolRegistry) -> None:
 
     # Write the watcher script to the sandbox
     await sandbox_write_file(tool_registry, "/tmp/fs_watcher.py", watcher_code)
-    # Install watchdog and start the watcher in the background
+    # Install watchdog with timeout and start the watcher in the background
     await run_sandbox_command(
         tool_registry,
-        "pip install watchdog -q && nohup python3 /tmp/fs_watcher.py > /tmp/fs_watcher.log 2>&1 &"
+        "timeout 60 pip install watchdog -q 2>/dev/null; nohup python3 /tmp/fs_watcher.py > /tmp/fs_watcher.log 2>&1 &"
     )
     # Clear any stale event log
     await sandbox_write_file(tool_registry, "/tmp/fs_events.jsonl", "")
@@ -1361,13 +1361,9 @@ async def handler(context: Any) -> AsyncGenerator[str, None]:
         finally:
             save_span.end()
 
-    # ── Workspace: save updated files back to context.store KV ──
-    if 'tool_registry' in locals() and tool_registry:
-        try:
-            await sync_workspace_from_sandbox(context, tool_registry)
-        except Exception as e:
-            logger.error(f"[workspace] Failed to sync workspace from sandbox: {e}")
+    # ── Workspace: already synced during tool execution via inotify change events; skip redundant end-of-handler sync ──
 
+    if 'tool_registry' in locals() and tool_registry:
         # ── Inotify: Stop filesystem watcher ──
         try:
             await stop_inotify_watcher(tool_registry)
