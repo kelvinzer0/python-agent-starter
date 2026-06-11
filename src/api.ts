@@ -300,6 +300,10 @@ export function sendMessageStream(
       let buffer = '';
       let doneReceived = false;
 
+      // Raw SSE event capture for debugging
+      const rawEvents: Array<{eventType: string; dataLen: number; ts: number}> = [];
+      (window as any).__raw_sse_events = rawEvents;
+
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
@@ -342,6 +346,9 @@ function dispatchSseChunk(part: string, cb: StreamCallbacks, markDone: () => voi
   }
 
   if (!eventType || !data) return;
+
+  // Capture raw event for debugging
+  try { (window as any).__raw_sse_events?.push({ eventType, dataLen: data.length, ts: Date.now() }); } catch {}
 
   try {
     const parsed = JSON.parse(data);
