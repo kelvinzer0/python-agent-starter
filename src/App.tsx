@@ -6,6 +6,9 @@ import {
   fetchWorkspaceFiles, readWorkspaceFile, writeWorkspaceFile, deleteWorkspaceFile
 } from './api';
 import type { ModelOption } from './api';
+import { 
+  initLocalFs, writeLocalFile, readLocalFile, listLocalFiles, deleteLocalFile 
+} from './lib/phcode-fs';
 import { I18nProvider, useT } from './i18n';
 import ReplShell from './components/repl/ReplShell';
 import ReplStream from './components/repl/ReplStream';
@@ -255,11 +258,45 @@ function AppInner() {
   const [editorLoading, setEditorLoading] = useState(false);
   const [editorSaving, setEditorSaving] = useState(false);
 
+  const refreshLocalFiles = useCallback(async () => {
+    try {
+      await initLocalFs();
+      const localFiles = await listLocalFiles();
+      setWorkspaceFiles(localFiles);
+    } catch (err) {
+      console.error('Failed to load local files:', err);
+    }
+  }, []);
+
+  const syncFilesFromCloud = useCallback(async (cid: string) => {
+    try {
+      await initLocalFs();
+      const cloudFiles = await fetchWorkspaceFiles(cid);
+      const localFiles = await listLocalFiles();
+      const cloudFileNames = new Set(cloudFiles.map(f => f.name));
+
+      for (const localF of localFiles) {
+        if (!cloudFileNames.has(localF.name)) {
+          await deleteLocalFile(localF.name);
+        }
+      }
+
+      await Promise.all(cloudFiles.map(async (cloudF) => {
+        const content = await readWorkspaceFile(cid, cloudF.name);
+        await writeLocalFile(cloudF.name, content);
+      }));
+
+      const updatedLocalFiles = await listLocalFiles();
+      setWorkspaceFiles(updatedLocalFiles);
+    } catch (err) {
+      console.error('Failed to sync files from cloud:', err);
+    }
+  }, []);
+
   const loadFiles = useCallback(async (cid: string) => {
     if (!cid) return;
-    const files = await fetchWorkspaceFiles(cid);
-    setWorkspaceFiles(files);
-  }, []);
+    await syncFilesFromCloud(cid);
+  }, [syncFilesFromCloud]);
 
   const [lines, setLines] = useState<ReplLine[]>([]);
   const [traceEvents, setTraceEvents] = useState<RawSseEvent[]>([]);
@@ -814,44 +851,49 @@ function AppInner() {
     setEditingFile({ name: filename, content: '', isNew: false });
     setEditorLoading(true);
     try {
-      const content = await readWorkspaceFile(conversationId, filename);
+      await initLocalFs();
+      const content = await readLocalFile(filename);
       setEditingFile(prev => prev ? { ...prev, content } : null);
     } catch (err) {
       alert('Failed to read file contents');
     } finally {
       setEditorLoading(false);
     }
-  }, [conversationId]);
+  }, []);
 
   const handleSaveFile = useCallback(async (filename: string, content: string) => {
     setEditorSaving(true);
     try {
+      await initLocalFs();
+      await writeLocalFile(filename, content);
       const success = await writeWorkspaceFile(conversationId, filename, content);
       if (success) {
         setEditingFile(null);
-        await loadFiles(conversationId);
+        await refreshLocalFiles();
       } else {
-        alert('Failed to save file');
+        alert('Failed to save file to cloud');
       }
     } catch (err) {
       alert('Failed to save file');
     } finally {
       setEditorSaving(false);
     }
-  }, [conversationId, loadFiles]);
+  }, [conversationId, refreshLocalFiles]);
 
   const handleDeleteFile = useCallback(async (filename: string) => {
     try {
+      await initLocalFs();
+      await deleteLocalFile(filename);
       const success = await deleteWorkspaceFile(conversationId, filename);
       if (success) {
-        await loadFiles(conversationId);
+        await refreshLocalFiles();
       } else {
-        alert('Failed to delete file');
+        alert('Failed to delete file from cloud');
       }
     } catch (err) {
       alert('Failed to delete file');
     }
-  }, [conversationId, loadFiles]);
+  }, [conversationId, refreshLocalFiles]);
 
   const handleCreateFile = useCallback(() => {
     const filename = prompt('Enter new file name:');
