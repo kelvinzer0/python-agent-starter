@@ -306,6 +306,9 @@ export function sendMessageStream(
       let buffer = '';
       let doneReceived = false;
 
+      // Debug: log all dispatched event types
+      (window as any).__sseDispatchLog = [];
+
       // Raw SSE event capture for debugging
       const rawEvents: Array<{eventType: string; dataLen: number; ts: number}> = [];
       (window as any).__raw_sse_events = rawEvents;
@@ -352,6 +355,9 @@ function dispatchSseChunk(part: string, cb: StreamCallbacks, markDone: () => voi
   }
 
   if (!eventType || !data) return;
+
+  // Debug: log dispatch
+  (window as any).__sseDispatchLog?.push({ eventType, dataLen: data.length });
 
   // Capture raw event for debugging
   try { (window as any).__raw_sse_events?.push({ eventType, dataLen: data.length, ts: Date.now() }); } catch {}
