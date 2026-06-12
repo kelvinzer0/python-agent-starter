@@ -1484,20 +1484,17 @@ else:
                     if local_dirty:
                         tool_registry.local_fs_dirty = False
 
-                    # Build files_snapshot: use _modified_files cache first (most reliable
-                    # for local_write_file since it captures exactly what was written),
-                    # then fall back to post_files from sandbox sync, then KV snapshot.
-                    modified_cache = getattr(tool_registry, '_modified_files', {})
-                    files_for_snapshot = dict(modified_cache) if modified_cache else {}
+                    # Build files_snapshot from the actual workspace state.
+                    # snapshot_workspace reads from cache (updated by both write and delete),
+                    # so it always reflects the true state including deletions.
+                    files_for_snapshot: dict[str, str] = {}
+                    try:
+                        files_for_snapshot = await snapshot_workspace(context) or {}
+                    except Exception:
+                        pass
 
                     if not files_for_snapshot:
                         files_for_snapshot = post_files or {}
-
-                    if not files_for_snapshot:
-                        try:
-                            files_for_snapshot = await snapshot_workspace(context) or {}
-                        except Exception:
-                            pass
 
                     post_sync_version = await load_workspace_version(context)
                     # Always emit file_changed — include full snapshot for IDB persistence

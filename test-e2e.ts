@@ -358,6 +358,63 @@ await test('Agentic: multiple tool calls persist all files', async () => {
   await ctx.close();
 });
 
+await test('Agentic: delete file removes from IDB', async () => {
+  const { ctx, page } = await freshPage(browser);
+  await register(page, 'ag4@test.com', 'Ag4', 'test123456');
+  await page.waitForTimeout(2000);
+
+  // First create a file
+  const ta = await page.waitForSelector('textarea', { timeout: 8_000 });
+  await ta.fill('Use local_write_file to create a file called to_delete.txt with content "will_be_deleted"');
+  await page.keyboard.press('Enter');
+  await page.waitForFunction(() => document.body.innerText.includes('[done'), { timeout: 120_000 });
+  await page.waitForTimeout(2000);
+
+  // Verify file exists in IDB
+  const beforeDelete = await page.evaluate(async () => {
+    return new Promise<string[]>((resolve) => {
+      const req = indexedDB.open('python-starter-workspace-db', 1);
+      req.onsuccess = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains('files')) { resolve([]); return; }
+        const cid = localStorage.getItem('eo_conversation_id');
+        const index = db.transaction('files', 'readonly').objectStore('files').index('byConversation');
+        const getAll = index.getAll(cid);
+        getAll.onsuccess = () => resolve(getAll.result.map((r: any) => r.filepath));
+        getAll.onerror = () => resolve([]);
+      };
+      req.onerror = () => resolve([]);
+    });
+  });
+  assert(beforeDelete.includes('to_delete.txt'), `File not created: ${beforeDelete}`);
+
+  // Now delete the file
+  const ta2 = await page.waitForSelector('textarea', { timeout: 8_000 });
+  await ta2.fill('Use local_delete_file to delete to_delete.txt');
+  await page.keyboard.press('Enter');
+  await page.waitForFunction(() => document.body.innerText.includes('[done'), { timeout: 120_000 });
+  await page.waitForTimeout(3000);
+
+  // Verify file is removed from IDB
+  const afterDelete = await page.evaluate(async () => {
+    return new Promise<string[]>((resolve) => {
+      const req = indexedDB.open('python-starter-workspace-db', 1);
+      req.onsuccess = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains('files')) { resolve([]); return; }
+        const cid = localStorage.getItem('eo_conversation_id');
+        const index = db.transaction('files', 'readonly').objectStore('files').index('byConversation');
+        const getAll = index.getAll(cid);
+        getAll.onsuccess = () => resolve(getAll.result.map((r: any) => r.filepath));
+        getAll.onerror = () => resolve([]);
+      };
+      req.onerror = () => resolve([]);
+    });
+  });
+  assert(!afterDelete.includes('to_delete.txt'), `File not deleted from IDB: ${afterDelete}`);
+  await ctx.close();
+});
+
 // ═══════════════════════════════════════
 // API TESTS
 // ═══════════════════════════════════════
