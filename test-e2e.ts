@@ -251,6 +251,15 @@ await test('Workspace: IDB files embedded in chat request', async () => {
 await test('Agentic: tool-call persists file to IDB via files_snapshot', async () => {
   const { ctx, page } = await freshPage(browser);
 
+  // Capture console logs for debugging
+  const consoleLogs: string[] = [];
+  page.on('console', (msg: any) => {
+    const text = msg.text();
+    if (text.includes('file_changed') || text.includes('IDB') || text.includes('tool_debug') || text.includes('workspace')) {
+      consoleLogs.push(text);
+    }
+  });
+
   await register(page, 'ag1@test.com', 'Ag1', 'test123456');
   await page.waitForTimeout(2000);
   const ta = await page.waitForSelector('textarea', { timeout: 8_000 });
@@ -260,6 +269,8 @@ await test('Agentic: tool-call persists file to IDB via files_snapshot', async (
     return document.body.innerText.includes('tool_persist') || document.body.innerText.includes('Successfully');
   }, { timeout: 90_000 });
   await page.waitForTimeout(3000);
+
+  console.log('   [DEBUG] Console logs:', JSON.stringify(consoleLogs, null, 2));
 
   // Verify file is in IDB with correct content
   const allFiles = await page.evaluate(async () => {
@@ -277,6 +288,8 @@ await test('Agentic: tool-call persists file to IDB via files_snapshot', async (
       req.onerror = () => resolve([]);
     });
   });
+
+  console.log('   [DEBUG] IDB files:', JSON.stringify(allFiles.map((f: any) => f.filepath)));
 
   const persistFile = allFiles.find((r: any) => r.filepath === 'tool_persist.txt');
   assert(!!persistFile, `File not in IDB after tool call. Files: ${JSON.stringify(allFiles.map((f: any) => f.filepath))}`);
