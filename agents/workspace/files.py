@@ -295,6 +295,11 @@ async def save_workspace_files(context: Any, files_dict: dict[str, str]) -> None
     new_version = current_version + 1
     wrapped = {"version": new_version, "files": files_dict}
 
+    # Always update request-scoped cache (source of truth when KV is broken)
+    cid = getattr(context, "conversation_id", None)
+    if cid:
+        set_workspace_cache(cid, files_dict)
+
     # Try EdgeOne KV store first (context.env.KV_STORE)
     kv_store = _get_kv_store(context)
     if kv_store:
