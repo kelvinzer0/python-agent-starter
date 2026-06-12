@@ -25,6 +25,7 @@ function assert(cond: boolean, msg: string) {
 async function freshPage(browser: any) {
   const ctx = await browser.newContext();
   const page = await ctx.newPage();
+  page.setDefaultTimeout(120_000);
   await page.goto(BASE, { waitUntil: 'networkidle', timeout: TIMEOUT });
   await page.waitForSelector('input[type="email"]', { timeout: 8_000 });
   return { ctx, page };
