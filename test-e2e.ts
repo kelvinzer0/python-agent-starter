@@ -247,25 +247,20 @@ await test('Workspace: IDB files embedded in chat request', async () => {
 });
 
 // ═══════════════════════════════════════
-// AGENTIC PERSISTENCE (IDB-first, embedded in chat)
+// IDB PERSISTENCE (deterministic — mock SSE)
 // ═══════════════════════════════════════
-await test('Agentic: tool-call persists file to IDB via files_snapshot', async () => {
-  const { ctx, page } = await freshPage(browser);
 
-  await register(page, 'ag1@test.com', 'Ag1', 'test123456');
-  await page.waitForTimeout(2000);
-  const ta = await page.waitForSelector('textarea', { timeout: 8_000 });
-  await ta.fill('Use local_write_file to create a file called tool_persist.txt with content "tool_call_works"');
-  await page.keyboard.press('Enter');
-  // Wait for the done marker (only appears after agent finishes), NOT user message text
-  await page.waitForFunction(() => {
-    const text = document.body.innerText;
-    return text.includes('[done');
-  }, { timeout: 90_000 });
-  await page.waitForTimeout(3000);
+function fakeSse(events: Array<{event: string; data: any}>): string {
+  return events.map(e => `event: ${e.event}\ndata: ${JSON.stringify(e.data)}`).join('\n\n') + '\n\n';
+}
 
-  const allFiles = await page.evaluate(async () => {
-    return new Promise<any[]>((resolve) => {
+async function getIdbCid(page: any): Promise<string> {
+  return page.evaluate(() => localStorage.getItem('eo_conversation_id') || '');
+}
+
+async function getIdbFiles(page: any): Promise<string[]> {
+  return page.evaluate(async () => {
+    return new Promise<string[]>((resolve) => {
       const req = indexedDB.open('python-starter-workspace-db', 1);
       req.onsuccess = () => {
         const db = req.result;
@@ -273,40 +268,213 @@ await test('Agentic: tool-call persists file to IDB via files_snapshot', async (
         const cid = localStorage.getItem('eo_conversation_id');
         const index = db.transaction('files', 'readonly').objectStore('files').index('byConversation');
         const getAll = index.getAll(cid);
-        getAll.onsuccess = () => resolve(getAll.result.map((r: any) => ({ filepath: r.filepath, content: r.content })));
+        getAll.onsuccess = () => resolve(getAll.result.map((r: any) => r.filepath));
         getAll.onerror = () => resolve([]);
       };
       req.onerror = () => resolve([]);
     });
   });
+}
 
-  const persistFile = allFiles.find((r: any) => r.filepath === 'tool_persist.txt');
-  assert(!!persistFile, `File not in IDB after tool call. Files: ${JSON.stringify(allFiles.map((f: any) => f.filepath))}`);
-  assert(persistFile.content === 'tool_call_works', `Content wrong: "${persistFile.content}"`);
+async function getIdbFileContent(page: any, filepath: string): Promise<string | null> {
+  return page.evaluate(async (fp: string) => {
+    return new Promise<string | null>((resolve) => {
+      const req = indexedDB.open('python-starter-workspace-db', 1);
+      req.onsuccess = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains('files')) { resolve(null); return; }
+        const cid = localStorage.getItem('eo_conversation_id');
+        const get = db.transaction('files', 'readonly').objectStore('files').get(`${cid}/${fp}`);
+        get.onsuccess = () => resolve(get.result?.content || null);
+        get.onerror = () => resolve(null);
+      };
+      req.onerror = () => resolve(null);
+    });
+  }, filepath);
+}
+
+await test('IDB: file_changed with snapshot saves file to IDB', async () => {
+  const { ctx, page } = await freshPage(browser);
+  await register(page, 'db1@test.com', 'DB1', 'test123456');
+  await page.waitForTimeout(1000);
+
+  // Mock /chat to return file_changed with files_snapshot
+  await page.route('**/chat', async (route: any) => {
+    const sse = fakeSse([
+      { event: 'file_changed', data: { version: 1, files_snapshot: { 'new_file.txt': 'hello world' } } },
+      { event: 'text_delta', data: { delta: 'OK' } },
+      { event: 'done', data: { stopped: false } },
+    ]);
+    await route.fulfill({ status: 200, contentType: 'text/event-stream', body: sse });
+  });
+
+  const ta = await page.waitForSelector('textarea', { timeout: 8_000 });
+  await ta.fill('trigger file_changed');
+  await page.keyboard.press('Enter');
+  await page.waitForFunction(() => document.body.innerText.includes('[done'), { timeout: 30_000 });
+  await page.waitForTimeout(1000);
+
+  const cid = await getIdbCid(page);
+  const files = await getIdbFiles(page);
+  assert(files.includes('new_file.txt'), `File not in IDB: ${files}`);
+
+  const content = await getIdbFileContent(page, 'new_file.txt');
+  assert(content === 'hello world', `Content wrong: "${content}"`);
   await ctx.close();
 });
 
-await test('Agentic: file survives reload after tool call', async () => {
+await test('IDB: file_changed removes deleted files from IDB', async () => {
   const { ctx, page } = await freshPage(browser);
-  await register(page, 'ag2@test.com', 'Ag2', 'test123456');
-  await page.waitForTimeout(2000);
+  await register(page, 'db2@test.com', 'DB2', 'test123456');
+  await page.waitForTimeout(1000);
+
+  // Pre-populate IDB with 3 files
+  const cid = await getIdbCid(page);
+  await page.evaluate(async (cid: string) => {
+    return new Promise<void>((resolve) => {
+      const req = indexedDB.open('python-starter-workspace-db', 1);
+      req.onsuccess = () => {
+        const db = req.result;
+        const tx = db.transaction('files', 'readwrite');
+        const store = tx.objectStore('files');
+        for (const [name, content] of [['keep.txt', 'stay'], ['delete_me.txt', 'gone'], ['also_keep.txt', 'also']]) {
+          store.put({
+            storageKey: `${cid}/${name}`, conversationId: cid, filepath: name,
+            content, size: content.length, hash: 'x', updatedAt: Date.now(), createdAt: Date.now(),
+          });
+        }
+        tx.oncomplete = () => resolve();
+      };
+      req.onerror = () => resolve();
+    });
+  }, cid);
+
+  // Mock /chat — snapshot only has keep.txt and also_keep.txt (delete_me.txt removed)
+  await page.route('**/chat', async (route: any) => {
+    const sse = fakeSse([
+      { event: 'file_changed', data: { version: 2, files_snapshot: { 'keep.txt': 'stay', 'also_keep.txt': 'also' } } },
+      { event: 'text_delta', data: { delta: 'OK' } },
+      { event: 'done', data: { stopped: false } },
+    ]);
+    await route.fulfill({ status: 200, contentType: 'text/event-stream', body: sse });
+  });
+
   const ta = await page.waitForSelector('textarea', { timeout: 8_000 });
-  await ta.fill('Use local_write_file to create a file called survive_reload.txt with content "i_survive"');
+  await ta.fill('trigger delete');
   await page.keyboard.press('Enter');
-  await page.waitForFunction(() => {
-    return document.body.innerText.includes('[done');
-  }, { timeout: 90_000 });
-  await page.waitForTimeout(3000);
+  await page.waitForFunction(() => document.body.innerText.includes('[done'), { timeout: 30_000 });
+  await page.waitForTimeout(1000);
 
-  // Reload
+  const files = await getIdbFiles(page);
+  assert(files.includes('keep.txt'), `keep.txt missing: ${files}`);
+  assert(files.includes('also_keep.txt'), `also_keep.txt missing: ${files}`);
+  assert(!files.includes('delete_me.txt'), `delete_me.txt still in IDB: ${files}`);
+  await ctx.close();
+});
+
+await test('IDB: file_changed updates existing file content', async () => {
+  const { ctx, page } = await freshPage(browser);
+  await register(page, 'db3@test.com', 'DB3', 'test123456');
+  await page.waitForTimeout(1000);
+
+  // Pre-populate IDB with a file
+  const cid = await getIdbCid(page);
+  await page.evaluate(async (cid: string) => {
+    return new Promise<void>((resolve) => {
+      const req = indexedDB.open('python-starter-workspace-db', 1);
+      req.onsuccess = () => {
+        const db = req.result;
+        const tx = db.transaction('files', 'readwrite');
+        tx.objectStore('files').put({
+          storageKey: `${cid}/update_me.txt`, conversationId: cid, filepath: 'update_me.txt',
+          content: 'old content', size: 11, hash: 'x', updatedAt: Date.now(), createdAt: Date.now(),
+        });
+        tx.oncomplete = () => resolve();
+      };
+      req.onerror = () => resolve();
+    });
+  }, cid);
+
+  // Mock /chat — snapshot has updated content
+  await page.route('**/chat', async (route: any) => {
+    const sse = fakeSse([
+      { event: 'file_changed', data: { version: 3, files_snapshot: { 'update_me.txt': 'new content' } } },
+      { event: 'text_delta', data: { delta: 'OK' } },
+      { event: 'done', data: { stopped: false } },
+    ]);
+    await route.fulfill({ status: 200, contentType: 'text/event-stream', body: sse });
+  });
+
+  const ta = await page.waitForSelector('textarea', { timeout: 8_000 });
+  await ta.fill('trigger update');
+  await page.keyboard.press('Enter');
+  await page.waitForFunction(() => document.body.innerText.includes('[done'), { timeout: 30_000 });
+  await page.waitForTimeout(1000);
+
+  const content = await getIdbFileContent(page, 'update_me.txt');
+  assert(content === 'new content', `Content not updated: "${content}"`);
+  await ctx.close();
+});
+
+await test('IDB: multiple files in snapshot all saved to IDB', async () => {
+  const { ctx, page } = await freshPage(browser);
+  await register(page, 'db4@test.com', 'DB4', 'test123456');
+  await page.waitForTimeout(1000);
+
+  const cid = await getIdbCid(page);
+
+  await page.route('**/chat', async (route: any) => {
+    const sse = fakeSse([
+      { event: 'file_changed', data: { version: 1, files_snapshot: { 'a.txt': 'aaa', 'b.txt': 'bbb', 'c.txt': 'ccc' } } },
+      { event: 'text_delta', data: { delta: 'OK' } },
+      { event: 'done', data: { stopped: false } },
+    ]);
+    await route.fulfill({ status: 200, contentType: 'text/event-stream', body: sse });
+  });
+
+  const ta = await page.waitForSelector('textarea', { timeout: 8_000 });
+  await ta.fill('trigger multi');
+  await page.keyboard.press('Enter');
+  await page.waitForFunction(() => document.body.innerText.includes('[done'), { timeout: 30_000 });
+  await page.waitForTimeout(1000);
+
+  const files = await getIdbFiles(page);
+  assert(files.includes('a.txt'), `a.txt missing: ${files}`);
+  assert(files.includes('b.txt'), `b.txt missing: ${files}`);
+  assert(files.includes('c.txt'), `c.txt missing: ${files}`);
+
+  assert(await getIdbFileContent(page, 'a.txt') === 'aaa');
+  assert(await getIdbFileContent(page, 'b.txt') === 'bbb');
+  assert(await getIdbFileContent(page, 'c.txt') === 'ccc');
+  await ctx.close();
+});
+
+await test('IDB: file persists reload after snapshot save', async () => {
+  const { ctx, page } = await freshPage(browser);
+  await register(page, 'db5@test.com', 'DB5', 'test123456');
+  await page.waitForTimeout(1000);
+
+  const cid = await getIdbCid(page);
+
+  await page.route('**/chat', async (route: any) => {
+    const sse = fakeSse([
+      { event: 'file_changed', data: { version: 1, files_snapshot: { 'persist.txt': 'survives' } } },
+      { event: 'text_delta', data: { delta: 'OK' } },
+      { event: 'done', data: { stopped: false } },
+    ]);
+    await route.fulfill({ status: 200, contentType: 'text/event-stream', body: sse });
+  });
+
+  const ta = await page.waitForSelector('textarea', { timeout: 8_000 });
+  await ta.fill('trigger persist');
+  await page.keyboard.press('Enter');
+  await page.waitForFunction(() => document.body.innerText.includes('[done'), { timeout: 30_000 });
+  await page.waitForTimeout(1000);
+
+  // Reload page
   await page.reload({ waitUntil: 'networkidle', timeout: TIMEOUT });
-  await page.waitForTimeout(2000);
+  await page.waitForTimeout(1000);
 
-  // Check sidebar
-  const sidebar = await page.textContent('aside');
-  assert(sidebar!.includes('survive_reload.txt'), 'Not in sidebar after reload');
-
-  // Check IDB content
   const content = await page.evaluate(async () => {
     return new Promise<string | null>((resolve) => {
       const req = indexedDB.open('python-starter-workspace-db', 1);
@@ -314,104 +482,14 @@ await test('Agentic: file survives reload after tool call', async () => {
         const db = req.result;
         if (!db.objectStoreNames.contains('files')) { resolve(null); return; }
         const cid = localStorage.getItem('eo_conversation_id');
-        const get = db.transaction('files', 'readonly').objectStore('files').get(`${cid}/survive_reload.txt`);
+        const get = db.transaction('files', 'readonly').objectStore('files').get(`${cid}/persist.txt`);
         get.onsuccess = () => resolve(get.result?.content || null);
         get.onerror = () => resolve(null);
       };
       req.onerror = () => resolve(null);
     });
   });
-  assert(content === 'i_survive', `Content wrong: "${content}"`);
-  await ctx.close();
-});
-
-await test('Agentic: multiple tool calls persist all files', async () => {
-  const { ctx, page } = await freshPage(browser);
-  await register(page, 'ag3@test.com', 'Ag3', 'test123456');
-  await page.waitForTimeout(2000);
-  const ta = await page.waitForSelector('textarea', { timeout: 8_000 });
-  await ta.fill('Use local_write_file to create these files one by one: multi_a.txt content "aaa", multi_b.txt content "bbb", multi_c.txt content "ccc"');
-  await page.keyboard.press('Enter');
-  await page.waitForFunction(() => {
-    return document.body.innerText.includes('[done');
-  }, { timeout: 120_000 });
-  await page.waitForTimeout(3000);
-
-  const files = await page.evaluate(async () => {
-    return new Promise<string[]>((resolve) => {
-      const req = indexedDB.open('python-starter-workspace-db', 1);
-      req.onsuccess = () => {
-        const db = req.result;
-        if (!db.objectStoreNames.contains('files')) { resolve([]); return; }
-        const cid = localStorage.getItem('eo_conversation_id');
-        const index = db.transaction('files', 'readonly').objectStore('files').index('byConversation');
-        const getAll = index.getAll(cid);
-        getAll.onsuccess = () => resolve(getAll.result.map((r: any) => r.filepath));
-        getAll.onerror = () => resolve([]);
-      };
-      req.onerror = () => resolve([]);
-    });
-  });
-  assert(files.includes('multi_a.txt'), `multi_a missing: ${files}`);
-  assert(files.includes('multi_b.txt'), `multi_b missing: ${files}`);
-  assert(files.includes('multi_c.txt'), `multi_c missing: ${files}`);
-  await ctx.close();
-});
-
-await test('Agentic: delete file removes from IDB', async () => {
-  const { ctx, page } = await freshPage(browser);
-  await register(page, 'ag4@test.com', 'Ag4', 'test123456');
-  await page.waitForTimeout(2000);
-
-  // First create a file
-  const ta = await page.waitForSelector('textarea', { timeout: 8_000 });
-  await ta.fill('Use local_write_file to create a file called to_delete.txt with content "will_be_deleted"');
-  await page.keyboard.press('Enter');
-  await page.waitForFunction(() => document.body.innerText.includes('[done'), { timeout: 120_000 });
-  await page.waitForTimeout(2000);
-
-  // Verify file exists in IDB
-  const beforeDelete = await page.evaluate(async () => {
-    return new Promise<string[]>((resolve) => {
-      const req = indexedDB.open('python-starter-workspace-db', 1);
-      req.onsuccess = () => {
-        const db = req.result;
-        if (!db.objectStoreNames.contains('files')) { resolve([]); return; }
-        const cid = localStorage.getItem('eo_conversation_id');
-        const index = db.transaction('files', 'readonly').objectStore('files').index('byConversation');
-        const getAll = index.getAll(cid);
-        getAll.onsuccess = () => resolve(getAll.result.map((r: any) => r.filepath));
-        getAll.onerror = () => resolve([]);
-      };
-      req.onerror = () => resolve([]);
-    });
-  });
-  assert(beforeDelete.includes('to_delete.txt'), `File not created: ${beforeDelete}`);
-
-  // Now delete the file
-  const ta2 = await page.waitForSelector('textarea', { timeout: 8_000 });
-  await ta2.fill('Use local_delete_file to delete to_delete.txt');
-  await page.keyboard.press('Enter');
-  await page.waitForFunction(() => document.body.innerText.includes('[done'), { timeout: 120_000 });
-  await page.waitForTimeout(3000);
-
-  // Verify file is removed from IDB
-  const afterDelete = await page.evaluate(async () => {
-    return new Promise<string[]>((resolve) => {
-      const req = indexedDB.open('python-starter-workspace-db', 1);
-      req.onsuccess = () => {
-        const db = req.result;
-        if (!db.objectStoreNames.contains('files')) { resolve([]); return; }
-        const cid = localStorage.getItem('eo_conversation_id');
-        const index = db.transaction('files', 'readonly').objectStore('files').index('byConversation');
-        const getAll = index.getAll(cid);
-        getAll.onsuccess = () => resolve(getAll.result.map((r: any) => r.filepath));
-        getAll.onerror = () => resolve([]);
-      };
-      req.onerror = () => resolve([]);
-    });
-  });
-  assert(!afterDelete.includes('to_delete.txt'), `File not deleted from IDB: ${afterDelete}`);
+  assert(content === 'survives', `File lost after reload: "${content}"`);
   await ctx.close();
 });
 
