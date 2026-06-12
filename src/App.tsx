@@ -816,32 +816,30 @@ function AppInner() {
               // Persist version manifest in IndexedDB for efficient reload detection
               saveManifest(conversationIdRef.current, {}, payload.version).catch(() => {});
 
-              // If backend sent files_snapshot, save directly to IDB
-              // ALWAYS process — not gated by version check — because we need
-              // the files in IDB for reload persistence regardless of version.
+              // If backend sent files_snapshot, save directly to IDB and remove deleted files
               const snapshot = (payload as any).files_snapshot;
               const snapshotKeys = snapshot ? Object.keys(snapshot) : [];
-              console.log('[file_changed] received, version:', payload.version, 'snapshot keys:', snapshotKeys, 'cid:', conversationIdRef.current?.slice(0, 8));
               if (snapshot && typeof snapshot === 'object' && snapshotKeys.length > 0) {
                 const cid = conversationIdRef.current;
-                const savePromises: Promise<any>[] = [];
+                // Save/overwrite files from snapshot
                 for (const [filepath, content] of Object.entries(snapshot)) {
                   if (typeof content === 'string') {
-                    const p = saveFile({ conversationId: cid, filepath, content })
-                      .then(() => { console.log('[file_changed] IDB saved:', filepath); })
-                      .catch(err => { console.warn('[file_changed] IDB FAILED:', filepath, err); });
-                    savePromises.push(p);
+                    saveFile({ conversationId: cid, filepath, content }).catch(() => {});
                   }
                 }
+                // Remove files from IDB that are NOT in the snapshot (deleted files)
+                loadConversationFiles(cid).then(currentIdb => {
+                  for (const filepath of Object.keys(currentIdb)) {
+                    if (!snapshot[filepath]) {
+                      deleteFile(cid, filepath).catch(() => {});
+                    }
+                  }
+                }).catch(() => {});
                 // Update sidebar
                 setWorkspaceFiles(Object.entries(snapshot).map(([name, content]) => ({
                   name,
                   size: (content as string).length,
                 })));
-              } else {
-                console.log('[file_changed] no snapshot in event — IDB is source of truth, no sync needed');
-                // No snapshot in event — IDB already has the files from tool_debug or previous sync
-                // No need to re-sync from broken backend
               }
             },
 
