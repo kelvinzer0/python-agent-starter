@@ -251,28 +251,18 @@ await test('Workspace: IDB files embedded in chat request', async () => {
 await test('Agentic: tool-call persists file to IDB via files_snapshot', async () => {
   const { ctx, page } = await freshPage(browser);
 
-  // Capture console logs for debugging
-  const consoleLogs: string[] = [];
-  page.on('console', (msg: any) => {
-    const text = msg.text();
-    if (text.includes('file_changed') || text.includes('IDB') || text.includes('tool_debug') || text.includes('workspace')) {
-      consoleLogs.push(text);
-    }
-  });
-
   await register(page, 'ag1@test.com', 'Ag1', 'test123456');
   await page.waitForTimeout(2000);
   const ta = await page.waitForSelector('textarea', { timeout: 8_000 });
   await ta.fill('Use local_write_file to create a file called tool_persist.txt with content "tool_call_works"');
   await page.keyboard.press('Enter');
+  // Wait for the done marker (only appears after agent finishes), NOT user message text
   await page.waitForFunction(() => {
-    return document.body.innerText.includes('tool_persist') || document.body.innerText.includes('Successfully');
+    const text = document.body.innerText;
+    return text.includes('[done');
   }, { timeout: 90_000 });
   await page.waitForTimeout(3000);
 
-  console.log('   [DEBUG] Console logs:', JSON.stringify(consoleLogs, null, 2));
-
-  // Verify file is in IDB with correct content
   const allFiles = await page.evaluate(async () => {
     return new Promise<any[]>((resolve) => {
       const req = indexedDB.open('python-starter-workspace-db', 1);
@@ -289,8 +279,6 @@ await test('Agentic: tool-call persists file to IDB via files_snapshot', async (
     });
   });
 
-  console.log('   [DEBUG] IDB files:', JSON.stringify(allFiles.map((f: any) => f.filepath)));
-
   const persistFile = allFiles.find((r: any) => r.filepath === 'tool_persist.txt');
   assert(!!persistFile, `File not in IDB after tool call. Files: ${JSON.stringify(allFiles.map((f: any) => f.filepath))}`);
   assert(persistFile.content === 'tool_call_works', `Content wrong: "${persistFile.content}"`);
@@ -305,7 +293,7 @@ await test('Agentic: file survives reload after tool call', async () => {
   await ta.fill('Use local_write_file to create a file called survive_reload.txt with content "i_survive"');
   await page.keyboard.press('Enter');
   await page.waitForFunction(() => {
-    return document.body.innerText.includes('survive_reload') || document.body.innerText.includes('Successfully');
+    return document.body.innerText.includes('[done');
   }, { timeout: 90_000 });
   await page.waitForTimeout(3000);
 
@@ -344,8 +332,7 @@ await test('Agentic: multiple tool calls persist all files', async () => {
   await ta.fill('Use local_write_file to create these files one by one: multi_a.txt content "aaa", multi_b.txt content "bbb", multi_c.txt content "ccc"');
   await page.keyboard.press('Enter');
   await page.waitForFunction(() => {
-    const t = document.body.innerText;
-    return t.includes('multi_a') && t.includes('multi_b') && t.includes('multi_c');
+    return document.body.innerText.includes('[done');
   }, { timeout: 120_000 });
   await page.waitForTimeout(3000);
 

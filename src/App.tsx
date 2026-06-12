@@ -809,8 +809,6 @@ function AppInner() {
             },
 
             onFileChanged: payload => {
-              (window as any).__fileChangedEvents = (window as any).__fileChangedEvents || [];
-              (window as any).__fileChangedEvents.push({ version: payload.version, hasSnapshot: !!(payload as any).files_snapshot, snapshotKeys: (payload as any).files_snapshot ? Object.keys((payload as any).files_snapshot) : [] });
               // Always update version ref
               if (payload.version > knownVersionRef.current) {
                 knownVersionRef.current = payload.version;
